@@ -78,11 +78,15 @@ class Text2Motion_Transformer(nn.Module):
         b, t, c = latents.shape
         b, t, d= idxs.shape
         feature = self.trans_temporal(latents, clip_feature, bert_feature, bert_mask) # b, t, c
-        feat = self.trans_base(idxs.view(b*t, d), feature.view(b*t, c)) # b*d, t, c
+        if feature.shape[1] == t + 1:
+            feature = feature[:, 1:, :]
+        elif feature.shape[1] != t:
+            raise ValueError(f"unexpected temporal feature length: {feature.shape[1]} vs {t}")
+        feat = self.trans_base(idxs.reshape(b*t, d), feature.reshape(b*t, c)) # b*d, t, c
         logits = self.trans_head(feat) # b*d, t, num_vq
         # logits = logits[:, :-1, :]
         # print(logits.shape)
-        return logits.view(b, t, d+1, self.num_vq+1), self.linear( feature )
+        return logits.reshape(b, t, d+1, self.num_vq+1), self.linear(feature)
 
     def sample(self, clip_feature, bert_feature, bert_mask, if_categorial=True, max_length = 50, pre_latent = []):
         for k in range(max_length):
@@ -417,4 +421,3 @@ class CrossCondTransHead(nn.Module):
 
 
         
-

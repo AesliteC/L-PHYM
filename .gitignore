@@ -8,6 +8,7 @@ __pycache__
 
 out/
 build
+stage1_artifacts/
 
 *.h5
 *.pth
