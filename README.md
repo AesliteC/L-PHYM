@@ -36,27 +36,27 @@ clip feature:   (B, 512), 当前默认全 0
 当前工作区在：
 
 ```text
-/home/chenjie/cc/robotics/
+./robotics/
 ```
 
 主要包含两个重要目录：
 
 ```text
-HumanML3D/   # 本地数据集与 HumanML3D 原始/中间处理文件，不建议上传 GitHub
-MoConVQ/    # 主体代码仓库，Stage1 代码都放在这里，建议上传这个仓库中的代码改动
+HumanML3D/   # 本地数据集与 HumanML3D 原始/中间处理文件
+MoConVQ/    # 主体代码仓库，Stage1 代码都放在这里
 ```
 
 本项目默认使用以下本地路径：
 
 ```text
 HumanML3D 数据根目录: ../HumanML3D/HumanML3D
-MoConVQ 主仓库:       /home/chenjie/cc/robotics/MoConVQ
+MoConVQ 主仓库:       robotics/MoConVQ
 预训练 MoConVQ:       moconvq_base.data
 预训练 GPT:           text_generation_GPT.pth
 输出目录:             stage1_artifacts/
 ```
 
-不要上传 `HumanML3D/` 数据目录。它包含 AMASS/HumanML3D 数据、body model、`pose_data`、`amass_data`、`new_joints`、`new_joint_vecs` 等大文件和受许可约束的数据。
+已配置环境：moconvq
 
 ## 3. 已完成内容
 
@@ -425,157 +425,7 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
 - 输出 BVH 到 `stage1_artifacts/generated/`；
 - 保存 prompt、checkpoint、seed、生成长度等 metadata。
 
-## 7. GitHub 上传建议
 
-推荐只上传 `MoConVQ` 仓库中的 Stage1 代码，不上传 `HumanML3D` 数据。
-
-应上传：
-
-```text
-.gitignore
-STAGE1_README.md
-MoConVQCore/Model/cross_trans_ori_fixsum.py
-Script/stage1/
-tests/test_stage1_*.py
-```
-
-不要上传：
-
-```text
-HumanML3D/
-stage1_artifacts/
-*.h5
-*.pt
-*.pth
-__pycache__/
-amass_data/
-pose_data/
-new_joints/
-new_joint_vecs/
-```
-
-当前 `.gitignore` 已包含：
-
-```text
-stage1_artifacts/
-*.h5
-*.pth
-```
-
-建议后续也忽略：
-
-```text
-*.pt
-__pycache__/
-```
-
-上传前建议检查：
-
-```bash
-git status --short --untracked-files=all
-git diff --cached --name-only
-```
-
-只添加 Stage1 相关文件：
-
-```bash
-git add \
-  .gitignore \
-  STAGE1_README.md \
-  MoConVQCore/Model/cross_trans_ori_fixsum.py \
-  Script/stage1 \
-  tests/test_stage1_gpt.py \
-  tests/test_stage1_humanml3d.py \
-  tests/test_stage1_motion_bridge.py \
-  tests/test_stage1_real_cache.py \
-  tests/test_stage1_real_synthesis.py \
-  tests/test_stage1_real_train.py
-```
-
-提交：
-
-```bash
-git commit -m "docs: add stage1 handoff readme"
-```
-
-推送到自己的 GitHub fork 或新仓库：
-
-```bash
-git push -u origin stage1-real-pipeline
-```
-
-## 8. 给接手同学的最短运行顺序
-
-```bash
-cd /home/chenjie/cc/robotics/MoConVQ
-source /home/chenjie/miniconda3/etc/profile.d/conda.sh
-conda activate moconvq
-```
-
-先跑测试：
-
-```bash
-python -m unittest \
-  tests.test_stage1_humanml3d \
-  tests.test_stage1_motion_bridge \
-  tests.test_stage1_gpt \
-  tests.test_stage1_real_synthesis \
-  tests.test_stage1_real_cache \
-  tests.test_stage1_real_train -v
-```
-
-合成 train 长序列：
-
-```bash
-python Script/stage1/synthesize_long_humanml3d.py \
-  --humanml-root ../HumanML3D/HumanML3D \
-  --split train \
-  --num-sequences 1000 \
-  --min-clips 2 \
-  --max-clips 4 \
-  --seed 0 \
-  --candidate-pool 256 \
-  --transition-max-score 0.35 \
-  --blend-frames 5 \
-  --caption-joiner " then " \
-  --output-dir stage1_artifacts/long_humanml3d/train
-```
-
-构建 train cache：
-
-```bash
-python Script/stage1/build_real_moconvq_gpt_cache.py \
-  --long-h5 stage1_artifacts/long_humanml3d/train/long_sequences.h5 \
-  --manifest stage1_artifacts/long_humanml3d/train/manifest.jsonl \
-  --base-data moconvq_base.data \
-  --text-model t5-large \
-  --window-size 50 \
-  --window-stride 25 \
-  --rvq-depth 4 \
-  --gpu 0 \
-  --output stage1_artifacts/gpt_cache/train_cache.pt \
-  --failure-log stage1_artifacts/gpt_cache/train_failures.jsonl
-```
-
-微调 GPT：
-
-```bash
-python Script/stage1/train_real_text_gpt.py \
-  --train-cache stage1_artifacts/gpt_cache/train_cache.pt \
-  --val-cache stage1_artifacts/gpt_cache/val_cache.pt \
-  --init-checkpoint text_generation_GPT.pth \
-  --base-data moconvq_base.data \
-  --output-dir stage1_artifacts/checkpoints/real_stage1 \
-  --epochs 20 \
-  --batch-size 8 \
-  --lr 1e-5 \
-  --weight-decay 0.01 \
-  --gpu 0 \
-  --seed 0 \
-  --save-every 1 \
-  --num-workers 4
-```
-
-## 9. 当前状态一句话总结
+## 7. 当前状态一句话总结
 
 Stage1 的代码框架、长序列合成、真实 MoConVQ encoder cache 构建、GPT 微调入口和测试都已经完成；下一步主要是跑正式规模实验、确认 T5 cache、检查 retarget 视觉质量，并用训练后的 checkpoint 做生成展示。
