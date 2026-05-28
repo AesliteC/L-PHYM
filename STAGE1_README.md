@@ -141,6 +141,7 @@ python Script/stage1/synthesize_long_humanml3d.py \
 文件：
 
 ```text
+Script/stage1/convert_humanml3d_to_moconvq_observation.py
 Script/stage1/real_moconvq_cache.py
 Script/stage1/build_real_moconvq_gpt_cache.py
 ```
@@ -158,6 +159,25 @@ Script/stage1/build_real_moconvq_gpt_cache.py
 - 使用 T5 编码文本，默认 `t5-large`；
 - 按 `window-size=50` 和 `window-stride=25` 切成训练窗口；
 - 保存为 GPT 训练 cache。
+
+窗口长度默认是 50，因为 `Text2Motion_Transformer` 的 `block_size=52` 会在 motion latent 前额外加入一个 condition token；cache 构建脚本会拒绝 `window-size > 51`。默认 `--max-text-length 256` 会把 T5 文本特征固定为 `(256, 1024)`，过长 caption 会按 T5 tokenizer 截断；正式实验推荐配合 `--caption-mode window`，让每个 50-token motion window 使用对应局部 caption。
+
+如果只想先检查 HumanML3D retarget 到 MoConVQ observation 是否合理，可以先运行独立转换脚本。它不会调用 GPT，也不会构建 T5 cache：
+
+```bash
+python Script/stage1/convert_humanml3d_to_moconvq_observation.py \
+  --long-h5 stage1_artifacts/long_humanml3d/train/long_sequences.h5 \
+  --manifest stage1_artifacts/long_humanml3d/train/manifest.jsonl \
+  --output-h5 stage1_artifacts/long_humanml3d/train/moconvq_observations.h5 \
+  --summary stage1_artifacts/long_humanml3d/train/moconvq_observations_summary.json
+```
+
+输出 H5 中每条序列包含：
+
+```text
+state_20x13:     (T, 20, 13)
+observation_323: (T, 323)
+```
 
 cache 字段：
 
@@ -184,10 +204,13 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --window-size 50 \
   --window-stride 25 \
   --rvq-depth 4 \
+  --caption-mode window \
   --gpu 0 \
   --output stage1_artifacts/gpt_cache/train_cache.pt \
   --failure-log stage1_artifacts/gpt_cache/train_failures.jsonl
 ```
+
+`--caption-mode sequence` 会把整条长序列 caption 复制给每个 window；`--caption-mode window` 会根据 `clip_boundaries` 给每个训练 window 选择重叠 clip 的局部 caption。真实长序列实验更推荐 `window`，因为它减少“当前动作窗口和整段长文本不对应”的噪声。
 
 ### 3.4 GPT 微调
 
@@ -262,13 +285,14 @@ python -m unittest \
   tests.test_stage1_gpt \
   tests.test_stage1_real_synthesis \
   tests.test_stage1_real_cache \
-  tests.test_stage1_real_train -v
+  tests.test_stage1_real_train \
+  tests.test_stage1_real_generate -v
 ```
 
 最近一次验证结果：
 
 ```text
-Ran 14 tests in 9.900s
+Ran 23 tests in 21.015s
 OK
 ```
 
@@ -372,14 +396,14 @@ t5-large
 HumanML3D 22 joints -> MoConVQ 20 bodies
 ```
 
-它已经经过 shape 和 encoder smoke test，但还没有做系统的视觉质量评估。后续建议：
+当前映射已经按 HumanML3D 的左右肢定义修正：HumanML3D 右腿链 `2,5,8,11` 对应 MoConVQ `rUpperLeg/rLowerLeg/rFoot/rToes`，左腿链 `1,4,7,10` 对应左腿；上肢同理右臂 `17,19,21`、左臂 `16,18,20`。它已经经过 shape、MoConVQ encoder smoke test 和小样本 observation 转换测试，但还需要做系统的视觉质量评估。后续建议：
 
 - 抽样保存 retarget 后的 state/observation；
 - 通过 MoConVQ decoder 或 tracking 生成 BVH；
 - 人眼检查拼接边界和身体姿态；
 - 检查脚滑、朝向突变、手臂异常等问题。
 
-如果 retarget 质量不够，下一步应考虑更严格的 BVH/SMPL 到 MoConVQ character retarget。
+如果视觉检查发现明显脚滑、左右肢异常或朝向错误，下一步应考虑更严格的 BVH/SMPL 到 MoConVQ character retarget。
 
 ### 6.4 Val cache 和评估指标
 
@@ -410,6 +434,7 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --window-size 50 \
   --window-stride 25 \
   --rvq-depth 4 \
+  --caption-mode window \
   --gpu 0 \
   --output stage1_artifacts/gpt_cache/val_cache.pt \
   --failure-log stage1_artifacts/gpt_cache/val_failures.jsonl
@@ -417,15 +442,29 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
 
 ### 6.5 长动作生成与展示
 
-当前 `generate_long_motion.py` 是最小生成脚本。后续可以改进：
+当前 `generate_long_motion.py` 可用于训练后生成 BVH。它默认使用 `T5Tokenizer + T5EncoderModel`，和真实 cache 构建路径一致；如果只想离线调试文本形状，可以显式传 `--text-encoder hash`。
 
-- 支持加载 `train_real_text_gpt.py` 产出的 `last.pth` 或 `best_val.pth`；
-- 支持更长文本 prompt；
-- 支持 rolling/chunked generation；
-- 输出 BVH 到 `stage1_artifacts/generated/`；
-- 保存 prompt、checkpoint、seed、生成长度等 metadata。
+生成脚本已经支持 fixed-context rolling generation：`--max-length` 控制总 latent token 数，`--context-size` 控制每个 chunk 最多回看多少历史 latent，`--chunk-size` 控制每次新采样多少 token。由于 GPT 的 `block_size=52` 还包含一个 condition token，每轮实际历史长度会自动裁剪到 `51 - 当前chunk长度`，避免超过 position/mask 长度。文本侧仍由 `--max-text-length` 控制，默认 256，超长 prompt 会被 T5 tokenizer 截断。
+
+示例：
+
+```bash
+python Script/stage1/generate_long_motion.py \
+  --checkpoint stage1_artifacts/checkpoints/real_stage1/best_val.pth \
+  --text "a person walks forward then turns around and waves" \
+  --output-bvh stage1_artifacts/generated/demo.bvh \
+  --base-data moconvq_base.data \
+  --text-encoder t5 \
+  --text-model t5-large \
+  --max-text-length 256 \
+  --max-length 120 \
+  --context-size 26 \
+  --chunk-size 25 \
+  --gpu 0 \
+  --seed 0
+```
 
 
 ## 7. 当前状态一句话总结
 
-Stage1 的代码框架、长序列合成、真实 MoConVQ encoder cache 构建、GPT 微调入口和测试都已经完成；下一步主要是跑正式规模实验、确认 T5 cache、检查 retarget 视觉质量，并用训练后的 checkpoint 做生成展示。
+Stage1 的代码框架、长序列合成、真实 MoConVQ encoder cache 构建、GPT 微调入口、滚动生成入口和测试都已经完成；下一步主要是跑正式规模实验、确认 T5 cache、检查 retarget 视觉质量，并用训练后的 checkpoint 做生成展示。

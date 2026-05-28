@@ -84,6 +84,43 @@ class Stage1RealSynthesisTests(unittest.TestCase):
             loaded_summary = json.loads((out / "summary.json").read_text())
             self.assertEqual(loaded_summary["config"]["candidate_pool"], 2)
 
+    def test_synthesize_dataset_filters_clips_with_invalid_joint_shape(self):
+        from Script.stage1.synthesize_long_humanml3d import synthesize_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            root = _write_humanml_fixture(tmp)
+            bad_id = "bad001"
+            for split in ("all", "train", "val", "test", "train_val"):
+                with (root / f"{split}.txt").open("a", encoding="utf-8") as f:
+                    f.write(f"{bad_id}\n")
+            np.save(root / "new_joints" / f"{bad_id}.npy", _make_clip(1, 9.0)[0])
+            np.save(root / "new_joint_vecs" / f"{bad_id}.npy", np.zeros((1, 263), dtype=np.float32))
+            (root / "texts" / f"{bad_id}.txt").write_text(
+                "bad clip#bad clip#0.0#0.0\n",
+                encoding="utf-8",
+            )
+
+            summary = synthesize_dataset(
+                humanml_root=root,
+                split="train",
+                num_sequences=4,
+                min_clips=2,
+                max_clips=2,
+                seed=7,
+                candidate_pool=4,
+                transition_max_score=0.35,
+                blend_frames=2,
+                caption_joiner=" then ",
+                output_dir=tmp / "out",
+            )
+
+            self.assertEqual(summary["filtered_invalid_clips"], 1)
+            rows = [json.loads(line) for line in (tmp / "out" / "manifest.jsonl").read_text().splitlines()]
+            self.assertEqual(len(rows), 4)
+            for row in rows:
+                self.assertNotIn(bad_id, row["sample_ids"])
+
 
 if __name__ == "__main__":
     unittest.main()

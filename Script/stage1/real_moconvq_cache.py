@@ -12,13 +12,38 @@ import torch
 from scipy.spatial.transform import Rotation
 
 
+MOCONVQ_BODY_NAMES = (
+    "pelvis",
+    "lowerBack",
+    "torso",
+    "rUpperLeg",
+    "lUpperLeg",
+    "rLowerLeg",
+    "lLowerLeg",
+    "rFoot",
+    "lFoot",
+    "rToes",
+    "lToes",
+    "head",
+    "rClavicle",
+    "lClavicle",
+    "rUpperArm",
+    "lUpperArm",
+    "rLowerArm",
+    "lLowerArm",
+    "rHand",
+    "lHand",
+)
+
+DEFAULT_TEXT_GPT_BLOCK_SIZE = 52
+
 MOCONVQ_PARENT = np.asarray(
     [-1, 0, 1, 0, 0, 3, 4, 5, 6, 7, 8, 2, 2, 2, 12, 13, 14, 15, 16, 17],
     dtype=np.int64,
 )
 
 HUMANML3D_TO_MOCONVQ = np.asarray(
-    [0, 3, 6, 1, 2, 4, 5, 7, 8, 10, 11, 15, 13, 14, 16, 17, 18, 19, 20, 21],
+    [0, 3, 6, 2, 1, 5, 4, 8, 7, 11, 10, 15, 14, 13, 17, 16, 19, 18, 21, 20],
     dtype=np.int64,
 )
 
@@ -227,6 +252,57 @@ def build_t5_text_encoder(
     return encode
 
 
+def _manifest_clip_boundaries_to_latent(
+    clip_boundaries: list[list[int]] | list[tuple[int, int]],
+    latent_length: int,
+    observation_length: int,
+) -> list[tuple[int, int]]:
+    if observation_length <= 0:
+        return []
+    scale = float(latent_length) / float(observation_length)
+    latent_boundaries: list[tuple[int, int]] = []
+    last_end = 0
+    for idx, (start, end) in enumerate(clip_boundaries):
+        latent_start = int(round(float(start) * scale))
+        latent_end = int(round(float(end) * scale))
+        if idx == 0:
+            latent_start = 0
+        latent_start = max(last_end, min(latent_start, latent_length))
+        latent_end = max(latent_start, min(latent_end, latent_length))
+        latent_boundaries.append((latent_start, latent_end))
+        last_end = latent_end
+    if latent_boundaries:
+        start, _ = latent_boundaries[-1]
+        latent_boundaries[-1] = (start, latent_length)
+    return latent_boundaries
+
+
+def select_window_caption(
+    full_caption: str,
+    clip_captions: list[str],
+    clip_boundaries: list[list[int]] | list[tuple[int, int]],
+    window_range: tuple[int, int],
+    latent_length: int,
+    observation_length: int,
+    joiner: str = " then ",
+) -> str:
+    if not clip_captions or not clip_boundaries:
+        return full_caption
+    latent_boundaries = _manifest_clip_boundaries_to_latent(
+        clip_boundaries,
+        latent_length=latent_length,
+        observation_length=observation_length,
+    )
+    if not latent_boundaries:
+        return full_caption
+    win_start, win_end = window_range
+    selected = []
+    for caption, (clip_start, clip_end) in zip(clip_captions, latent_boundaries):
+        if clip_start < win_end and clip_end > win_start:
+            selected.append(str(caption))
+    return joiner.join(selected) if selected else full_caption
+
+
 def build_cache_from_long_h5(
     long_h5_path: Path,
     manifest_path: Path,
@@ -236,7 +312,19 @@ def build_cache_from_long_h5(
     window_stride: int,
     rvq_depth: int,
     fps: int = 20,
+    caption_mode: str = "sequence",
+    caption_joiner: str = " then ",
+    text_model: str | None = None,
+    max_text_length: int | None = None,
 ) -> tuple[dict[str, object], list[dict[str, str]]]:
+    if caption_mode not in {"sequence", "window"}:
+        raise ValueError(f"unknown caption_mode: {caption_mode}")
+    max_motion_tokens = DEFAULT_TEXT_GPT_BLOCK_SIZE - 1
+    if window_size > max_motion_tokens:
+        raise ValueError(
+            f"window_size {window_size} exceeds GPT motion context {max_motion_tokens}; "
+            f"block_size {DEFAULT_TEXT_GPT_BLOCK_SIZE} reserves one condition token"
+        )
     manifest = load_manifest(manifest_path)
     latents_all = []
     indices_all = []
@@ -247,6 +335,7 @@ def build_cache_from_long_h5(
     window_ranges = []
     sample_ids_all = []
     failures: list[dict[str, str]] = []
+    encoded_text_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
     with h5py.File(long_h5_path, "r") as h5:
         for sequence_id in h5.keys():
@@ -261,18 +350,31 @@ def build_cache_from_long_h5(
                 state = humanml3d_joints_to_moconvq_state(joints, fps=fps)
                 observation = moconvq_state_to_observation(state)
                 latent, index = encode_observation_with_agent(agent, observation, rvq_depth=rvq_depth)
-                text_feature, text_mask = text_encoder([caption])
                 for latent_window, index_window, window_range in make_windows(
                     latent,
                     index,
                     window_size=window_size,
                     window_stride=window_stride,
                 ):
+                    window_caption = caption
+                    if caption_mode == "window":
+                        window_caption = select_window_caption(
+                            full_caption=caption,
+                            clip_captions=[str(x) for x in row.get("clip_captions", [])],
+                            clip_boundaries=row.get("clip_boundaries", []),
+                            window_range=window_range,
+                            latent_length=len(latent),
+                            observation_length=len(observation),
+                            joiner=caption_joiner,
+                        )
+                    if window_caption not in encoded_text_cache:
+                        encoded_text_cache[window_caption] = text_encoder([window_caption])
+                    text_feature, text_mask = encoded_text_cache[window_caption]
                     latents_all.append(latent_window)
                     indices_all.append(index_window)
                     text_features_all.append(text_feature[0])
                     text_masks_all.append(text_mask[0])
-                    captions.append(caption)
+                    captions.append(window_caption)
                     sequence_ids.append(sequence_id)
                     window_ranges.append(window_range)
                     sample_ids_all.append(list(sample_ids))
@@ -301,6 +403,10 @@ def build_cache_from_long_h5(
             "window_stride": window_stride,
             "rvq_depth": rvq_depth,
             "fps": fps,
+            "caption_mode": caption_mode,
+            "caption_joiner": caption_joiner,
+            "text_model": text_model,
+            "max_text_length": max_text_length,
         },
     }
     return cache, failures
@@ -351,6 +457,8 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--max-text-length", type=int, default=256)
     parser.add_argument("--max-failure-rate", type=float, default=0.1)
+    parser.add_argument("--caption-mode", choices=("sequence", "window"), default="sequence")
+    parser.add_argument("--caption-joiner", default=" then ")
     parser.add_argument("--output", required=True)
     parser.add_argument("--failure-log", required=True)
     args = parser.parse_args(argv)
@@ -368,6 +476,10 @@ def main(argv: Iterable[str] | None = None) -> None:
         window_stride=args.window_stride,
         rvq_depth=args.rvq_depth,
         fps=args.fps,
+        caption_mode=args.caption_mode,
+        caption_joiner=args.caption_joiner,
+        text_model=args.text_model,
+        max_text_length=args.max_text_length,
     )
 
     output = Path(args.output)

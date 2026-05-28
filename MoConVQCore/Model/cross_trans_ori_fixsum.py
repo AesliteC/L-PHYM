@@ -88,7 +88,9 @@ class Text2Motion_Transformer(nn.Module):
         # print(logits.shape)
         return logits.reshape(b, t, d+1, self.num_vq+1), self.linear(feature)
 
-    def sample(self, clip_feature, bert_feature, bert_mask, if_categorial=True, max_length = 50, pre_latent = []):
+    def sample(self, clip_feature, bert_feature, bert_mask, if_categorial=True, max_length = 50, pre_latent = None):
+        if pre_latent is None:
+            pre_latent = []
         for k in range(max_length):
             if k ==0:
                 latent = pre_latent
@@ -152,7 +154,7 @@ class Text2Motion_Transformer(nn.Module):
                 break
             if k == 0:
                 # ls = cur_latent.unsqueeze(1)
-                if pre_latent == []:
+                if isinstance(pre_latent, list) and len(pre_latent) == 0:
                     ls = cur_latent.unsqueeze(1)
                 else:
                     ls = torch.cat((pre_latent, cur_latent.unsqueeze(1)), dim=1)

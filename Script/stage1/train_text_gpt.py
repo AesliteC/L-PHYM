@@ -63,7 +63,11 @@ def load_gpt_embeddings(base_data_path: str) -> list[torch.Tensor]:
 
 def build_text_gpt_model(cfg: gpt_config, device: str = "cpu", base_data_path: str = "moconvq_base.data") -> Text2Motion_Transformer:
     embeddings = load_gpt_embeddings(base_data_path)
-    return Text2Motion_Transformer(**cfg.__dict__, embeddings=embeddings).to(device)
+    model = Text2Motion_Transformer(**cfg.__dict__, embeddings=embeddings).to(device)
+    # Text2Motion_Transformer keeps the RVQ codebooks in a plain Python list for
+    # sampling, so module.to(device) does not move them automatically.
+    model.embedding = [embedding.to(device) for embedding in model.embedding]
+    return model
 
 
 def _load_state_dict_flexible(model: nn.Module, checkpoint_path: str) -> None:

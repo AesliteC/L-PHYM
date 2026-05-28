@@ -13,9 +13,10 @@ import numpy as np
 from Script.stage1.humanml3d import HumanML3DCatalog, load_humanml3d_catalog
 
 
-HIP_IDS = (1, 2)
-SHOULDER_IDS = (13, 14)
-FOOT_IDS = (10, 11)
+# HumanML3D face_joint_indx is [right hip, left hip, right shoulder, left shoulder].
+HIP_IDS = (2, 1)
+SHOULDER_IDS = (17, 16)
+FOOT_IDS = (8, 11, 7, 10)
 UP = np.array([0.0, 1.0, 0.0], dtype=np.float32)
 
 
@@ -115,6 +116,20 @@ def _sample_candidates(rng: random.Random, ids: list[str], pool_size: int) -> li
     return rng.sample(ids, count) if count < len(ids) else list(ids)
 
 
+def _is_valid_clip(catalog: HumanML3DCatalog, sample_id: str) -> bool:
+    sample = catalog.by_id[sample_id]
+    joints = np.load(sample.joints_path, mmap_mode="r")
+    vecs = np.load(sample.vecs_path, mmap_mode="r")
+    return (
+        joints.ndim == 3
+        and joints.shape[1:] == (22, 3)
+        and joints.shape[0] >= 2
+        and vecs.ndim == 2
+        and vecs.shape[1] == 263
+        and vecs.shape[0] >= 2
+    )
+
+
 def synthesize_dataset(
     humanml_root: Path,
     split: str,
@@ -135,7 +150,11 @@ def synthesize_dataset(
         raise ValueError("invalid clip count bounds")
 
     rng = random.Random(seed)
-    ids = list(catalog.split_ids[split])
+    split_ids = list(catalog.split_ids[split])
+    ids = [sample_id for sample_id in split_ids if _is_valid_clip(catalog, sample_id)]
+    filtered_invalid_clips = len(split_ids) - len(ids)
+    if len(ids) < max_clips:
+        raise ValueError(f"not enough valid clips in split {split}: {len(ids)}")
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.jsonl"
     h5_path = output_dir / "long_sequences.h5"
@@ -244,6 +263,7 @@ def synthesize_dataset(
         "avg_frames": float(np.mean(frame_lengths)) if frame_lengths else 0.0,
         "forced_transitions": forced_count,
         "failed_sequences": 0,
+        "filtered_invalid_clips": filtered_invalid_clips,
         "config": {
             "humanml_root": str(humanml_root),
             "split": split,

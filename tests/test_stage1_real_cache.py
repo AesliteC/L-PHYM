@@ -48,6 +48,24 @@ class _FakeAgent:
 
 
 class Stage1RealCacheTests(unittest.TestCase):
+    def test_humanml_mapping_preserves_left_right_body_order(self):
+        from Script.stage1.real_moconvq_cache import (
+            HUMANML3D_TO_MOCONVQ,
+            MOCONVQ_BODY_NAMES,
+        )
+
+        mapping = dict(zip(MOCONVQ_BODY_NAMES, HUMANML3D_TO_MOCONVQ))
+        self.assertEqual(mapping["rUpperLeg"], 2)
+        self.assertEqual(mapping["lUpperLeg"], 1)
+        self.assertEqual(mapping["rFoot"], 8)
+        self.assertEqual(mapping["lFoot"], 7)
+        self.assertEqual(mapping["rToes"], 11)
+        self.assertEqual(mapping["lToes"], 10)
+        self.assertEqual(mapping["rUpperArm"], 17)
+        self.assertEqual(mapping["lUpperArm"], 16)
+        self.assertEqual(mapping["rHand"], 21)
+        self.assertEqual(mapping["lHand"], 20)
+
     def test_retarget_state_and_observation_have_moconvq_shapes(self):
         from Script.stage1.real_moconvq_cache import (
             humanml3d_joints_to_moconvq_state,
@@ -103,6 +121,194 @@ class Stage1RealCacheTests(unittest.TestCase):
             self.assertEqual(cache["text_features"].shape, (1, 8, 1024))
             self.assertEqual(cache["indices"][0, 6:].unique().item(), 513)
             self.assertEqual(cache["window_ranges"], [(0, 6)])
+
+    def test_cache_rejects_windows_that_exceed_gpt_temporal_context(self):
+        from Script.stage1.real_moconvq_cache import build_cache_from_long_h5
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            long_h5 = tmp / "long.h5"
+            manifest = tmp / "manifest.jsonl"
+            with h5py.File(long_h5, "w") as h5:
+                group = h5.create_group("seq_000")
+                group.create_dataset("joints_22", data=_toy_joints())
+                group.attrs["caption"] = "walk"
+                group.attrs["sample_ids"] = "000001"
+            manifest.write_text(
+                '{"sequence_id":"seq_000","caption":"walk","sample_ids":["000001"]}\n',
+                encoding="utf-8",
+            )
+
+            def fake_text_encoder(captions):
+                return (
+                    np.ones((len(captions), 8, 1024), dtype=np.float32),
+                    np.zeros((len(captions), 8), dtype=bool),
+                )
+
+            with self.assertRaisesRegex(ValueError, "window_size"):
+                build_cache_from_long_h5(
+                    long_h5_path=long_h5,
+                    manifest_path=manifest,
+                    agent=_FakeAgent(),
+                    text_encoder=fake_text_encoder,
+                    window_size=52,
+                    window_stride=5,
+                    rvq_depth=4,
+                    fps=20,
+                )
+
+    def test_build_cache_can_use_boundary_aligned_window_captions(self):
+        from Script.stage1.real_moconvq_cache import build_cache_from_long_h5
+
+        class WindowAgent:
+            def encode_seq_all(self, obs, target):
+                latent = torch.ones((1, 12, 768), dtype=torch.float32)
+                indices = torch.arange(12 * 8, dtype=torch.long).reshape(8, 1, 12) % 512
+                return {"latent_vq": latent, "indexs": indices}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            long_h5 = tmp / "long.h5"
+            manifest = tmp / "manifest.jsonl"
+            with h5py.File(long_h5, "w") as h5:
+                group = h5.create_group("seq_000")
+                group.create_dataset("joints_22", data=_toy_joints(length=48))
+                group.create_dataset("clip_boundaries", data=np.asarray([[0, 24], [24, 48]], dtype=np.int32))
+                group.attrs["caption"] = "walk then kick"
+                group.attrs["sample_ids"] = "000001,000002"
+            manifest.write_text(
+                json_line := (
+                    '{"sequence_id":"seq_000","caption":"walk then kick",'
+                    '"clip_captions":["walk","kick"],'
+                    '"clip_boundaries":[[0,24],[24,48]],'
+                    '"sample_ids":["000001","000002"]}\n'
+                ),
+                encoding="utf-8",
+            )
+            self.assertIn("clip_captions", json_line)
+
+            seen = []
+
+            def fake_text_encoder(captions):
+                seen.extend(captions)
+                return (
+                    np.ones((len(captions), 8, 1024), dtype=np.float32),
+                    np.zeros((len(captions), 8), dtype=bool),
+                )
+
+            cache, failures = build_cache_from_long_h5(
+                long_h5_path=long_h5,
+                manifest_path=manifest,
+                agent=WindowAgent(),
+                text_encoder=fake_text_encoder,
+                window_size=6,
+                window_stride=6,
+                rvq_depth=4,
+                fps=20,
+                caption_mode="window",
+            )
+
+            self.assertEqual(failures, [])
+            self.assertEqual(cache["window_ranges"], [(0, 6), (6, 12)])
+            self.assertEqual(cache["captions"], ["walk", "kick"])
+            self.assertEqual(seen, ["walk", "kick"])
+
+    def test_cache_main_records_text_encoder_configuration(self):
+        from Script.stage1 import real_moconvq_cache
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            long_h5 = tmp / "long.h5"
+            manifest = tmp / "manifest.jsonl"
+            output = tmp / "cache.pt"
+            failure_log = tmp / "failures.jsonl"
+            with h5py.File(long_h5, "w") as h5:
+                group = h5.create_group("seq_000")
+                group.create_dataset("joints_22", data=_toy_joints())
+                group.attrs["caption"] = "walk"
+                group.attrs["sample_ids"] = "000001"
+            manifest.write_text(
+                '{"sequence_id":"seq_000","caption":"walk","sample_ids":["000001"]}\n',
+                encoding="utf-8",
+            )
+
+            old_agent_builder = real_moconvq_cache.build_loaded_moconvq_agent
+            old_text_builder = real_moconvq_cache.build_t5_text_encoder
+            try:
+                real_moconvq_cache.build_loaded_moconvq_agent = lambda gpu, base_data: _FakeAgent()
+                real_moconvq_cache.build_t5_text_encoder = lambda model_name, device, max_length: (
+                    lambda captions: (
+                        np.ones((len(captions), max_length, 1024), dtype=np.float32),
+                        np.zeros((len(captions), max_length), dtype=bool),
+                    )
+                )
+                real_moconvq_cache.main(
+                    [
+                        "--long-h5",
+                        str(long_h5),
+                        "--manifest",
+                        str(manifest),
+                        "--base-data",
+                        "fake.data",
+                        "--text-model",
+                        "fake-t5",
+                        "--max-text-length",
+                        "17",
+                        "--window-size",
+                        "10",
+                        "--window-stride",
+                        "5",
+                        "--output",
+                        str(output),
+                        "--failure-log",
+                        str(failure_log),
+                    ]
+                )
+            finally:
+                real_moconvq_cache.build_loaded_moconvq_agent = old_agent_builder
+                real_moconvq_cache.build_t5_text_encoder = old_text_builder
+
+            cache = torch.load(output, map_location="cpu")
+            self.assertEqual(cache["config"]["text_model"], "fake-t5")
+            self.assertEqual(cache["config"]["max_text_length"], 17)
+            self.assertEqual(cache["text_features"].shape, (1, 17, 1024))
+
+    def test_convert_long_h5_to_moconvq_observation_writes_inspection_h5(self):
+        from Script.stage1.convert_humanml3d_to_moconvq_observation import (
+            convert_long_h5_to_moconvq_observation,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            long_h5 = tmp / "long.h5"
+            manifest = tmp / "manifest.jsonl"
+            output_h5 = tmp / "moconvq_obs.h5"
+            with h5py.File(long_h5, "w") as h5:
+                group = h5.create_group("seq_000")
+                group.create_dataset("joints_22", data=_toy_joints())
+                group.create_dataset("clip_boundaries", data=np.asarray([[0, 24]], dtype=np.int32))
+                group.attrs["caption"] = "walk"
+                group.attrs["sample_ids"] = "000001"
+                group.attrs["split"] = "train"
+            manifest.write_text(
+                '{"sequence_id":"seq_000","caption":"walk","sample_ids":["000001"],"split":"train"}\n',
+                encoding="utf-8",
+            )
+
+            summary = convert_long_h5_to_moconvq_observation(
+                long_h5_path=long_h5,
+                manifest_path=manifest,
+                output_h5_path=output_h5,
+                fps=20,
+            )
+
+            self.assertEqual(summary["converted_sequences"], 1)
+            self.assertEqual(summary["failed_sequences"], 0)
+            with h5py.File(output_h5, "r") as h5:
+                group = h5["seq_000"]
+                self.assertEqual(group["state_20x13"].shape, (24, 20, 13))
+                self.assertEqual(group["observation_323"].shape, (24, 323))
+                self.assertEqual(group.attrs["caption"], "walk")
 
 
 if __name__ == "__main__":
