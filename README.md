@@ -31,6 +31,25 @@ clip feature:   (B, 512), 当前默认全 0
 
 训练目标是预测每帧的 4 层 RVQ codebook token，而不是预测文本 token。
 
+## 0. 当前结论
+
+截至当前版本，Stage1 的端到端测试链路已经跑通：
+
+```text
+HumanML3D 长序列合成
+  -> MoConVQ observation/cache 构建
+  -> Text2Motion_Transformer 微调
+  -> 文本生成 BVH
+```
+
+已经完成过一次真实 cache 构建、GPT 微调和 baseline/finetuned BVH 对比。代码层面可以从合成数据一路跑到生成 `.bvh` 文件，说明工程链路是连通的。
+
+但当前结果还不能作为“效果好”的结论。最新生成对比中，微调模型能比 baseline 更稳定地生成长序列，不容易提前输出 end token；不过从实际 BVH 视觉效果看，动作质量和文本语义对齐仍然不理想，存在待解决问题。当前阶段的结论应写成：
+
+```text
+测试链路已成功跑通，但生成效果仍不好，后续重点是定位并修复数据转换、retarget、训练目标和长文本条件对齐问题。
+```
+
 ## 2. 工作区结构
 
 当前工作区在：
@@ -296,6 +315,46 @@ Ran 23 tests in 21.015s
 OK
 ```
 
+端到端实验状态：
+
+- 已生成 `stage1_artifacts/long_humanml3d/` 下的 HumanML3D 合成长序列数据；
+- 已构建真实 MoConVQ GPT cache：
+  - `stage1_artifacts/gpt_cache/train_cache.pt`
+  - `stage1_artifacts/gpt_cache/val_cache.pt`
+- 已完成一次 `train_real_text_gpt.py` 微调，输出 checkpoint：
+  - `stage1_artifacts/checkpoints/real_stage1/checkpoint_epoch_5.pth`
+  - `stage1_artifacts/checkpoints/real_stage1/checkpoint_epoch_10.pth`
+  - `stage1_artifacts/checkpoints/real_stage1/checkpoint_epoch_15.pth`
+  - `stage1_artifacts/checkpoints/real_stage1/checkpoint_epoch_20.pth`
+  - `stage1_artifacts/checkpoints/real_stage1/best_val.pth`
+  - `stage1_artifacts/checkpoints/real_stage1/last.pth`
+- 已使用 `checkpoint_epoch_5.pth` 和 baseline `text_generation_GPT.pth` 生成 BVH 对比：
+  - `stage1_artifacts/generated_bvh_compare/real_stage1_epoch5_vs_baseline/`
+
+`checkpoint_epoch_5.pth` 的日志指标：
+
+```text
+train loss:       0.09024
+train token acc:  0.98169
+val loss:         0.03926
+val token acc:    0.99300
+val depth acc:    0.99965 / 0.99044 / 0.99233 / 0.98957
+```
+
+这说明训练脚本能够拟合 cache 中的 RVQ token 预测任务，但它不等价于最终动作质量好。动作生成质量仍需要通过 BVH 视觉检查、物理合理性和文本语义一致性评估。
+
+已生成的 epoch5 对比中，baseline 在长文本 prompt 上经常提前结束，而 epoch5 微调模型基本能生成到目标长度：
+
+```text
+walk_turn_return:      baseline 696 frames,  epoch5 2880 frames
+walk_run_jump:         baseline 936 frames,  epoch5 2880 frames
+circle_wave_crouch:    baseline 1176 frames, epoch5 2880 frames
+sidestep_kick_turn:    baseline 408 frames,  epoch5 2880 frames
+long_sequence_mixed:   baseline 1176 frames, epoch5 2880 frames
+```
+
+这只能说明微调后模型更愿意生成长序列，不能说明动作语义和运动质量已经合格。目前实际观察结论是：链路成功，但效果不好，问题待解决。
+
 额外 smoke test：
 
 - 真实 encoder 小烟测：
@@ -315,7 +374,7 @@ OK
   - `train_real_text_gpt.py --smoke` 完成 forward/backward/save；
   - 输出 `/tmp/stage1_real_train_smoke/last.pth`。
 
-注意：`t5-large` 的完整下载和正式编码尚未在大规模实验中验证。当前确认了 `transformers` 可 import，版本为 `4.46.3`。
+注意：`t5-large` 已下载到本地缓存目录并用于真实 cache/生成链路。后续如果换机器运行，需要确认本地模型路径或 HuggingFace cache 是否可用。
 
 ## 5. 旧 scaffold 与真实实验主线的关系
 
@@ -347,21 +406,53 @@ Script/stage1/train_real_text_gpt.py
 
 ## 6. 还需要完成的工作
 
-### 6.1 正式数据规模实验
+### 6.1 当前效果问题定位
 
-还没有完整跑完：
+当前最大问题不是脚本跑不通，而是生成结果质量不好。后续应优先定位以下问题：
+
+- HumanML3D 22-joint skeleton 到 MoConVQ 20-body state 的 retarget 是否足够准确；
+- `state2ob()` 之后再经过 `agent.encode_seq_all()` 得到的 latent/RVQ indices 是否能被 MoConVQ decoder 稳定还原；
+- 合成长序列的拼接边界是否引入不自然速度、朝向或脚部状态突变；
+- `--caption-mode window` 下每个 50-token motion window 对应的局部 caption 是否真正匹配该窗口动作；
+- GPT 只在 50-token window 上训练，而推理时滚动生成更长序列，是否出现分布外累积误差；
+- 微调 loss 很低但生成质量差，可能说明模型主要学到 token 分布/结束 token 行为，而没有真正提升长语义控制；
+- 现有评估主要依赖 BVH 视觉检查，还需要更系统的指标，例如生成长度、脚滑、root drift、重建误差、caption-action 对齐人工评分。
+
+建议下一步先做一个最小闭环诊断：
 
 ```text
-1000+ 长序列合成
-train/val cache 构建
-20 epoch GPT 微调
-生成结果评估
+HumanML3D joints
+  -> MoConVQ state/observation
+  -> encode_seq_all()
+  -> RVQ latent
+  -> MoConVQ decoder/generate BVH
 ```
 
-建议先从小规模逐步扩大：
+先不训练 GPT，只检查单条真实动作经过转换和 MoConVQ encode/decode 后是否还能生成合理动作。如果这一步质量差，问题主要在 retarget/cache；如果这一步质量可以，再继续查 GPT 训练和长文本生成。
+
+### 6.2 生成效果评估与修复
+
+当前已经能生成 BVH，但效果不好。建议保留以下对比目录作为问题样例：
 
 ```text
-10 sequences -> 100 sequences -> 1000 sequences
+stage1_artifacts/generated_bvh_compare/real_stage1_epoch5_vs_baseline/
+```
+
+后续修复方向：
+
+- 对比 baseline、epoch5、best_val、last 的同一组 prompt；
+- 检查 finetuned 模型是否只是避免早停，但动作内容重复或语义不对；
+- 对生成 BVH 做逐 prompt 人工记录，例如“是否转身”“是否跳跃”“是否蹲下”“是否明显脚滑”；
+- 尝试不同 `--chunk-size`、`--context-size`、`--temperature`、`--top-k`，避免 greedy decoding 固化坏模式；
+- 将训练 cache 中的若干 window 反解成 BVH，检查训练目标本身是否可信；
+- 若 retarget 问题明显，优先重做 HumanML3D 到 MoConVQ character 的转换，而不是继续调 GPT。
+
+### 6.3 数据规模和训练配置
+
+当前已经完成一次真实链路，但还需要系统复现实验。建议按规模逐步扩大和记录：
+
+```text
+10 sequences -> 100 sequences -> 当前规模 -> 更大规模
 ```
 
 每一步确认：
@@ -371,7 +462,9 @@ train/val cache 构建
 - indices 是否在合法范围内；
 - 训练 loss 是否下降。
 
-### 6.2 T5 模型下载和缓存
+同时不要只看 token accuracy。token accuracy 高但 BVH 差时，应优先检查数据转换和生成策略。
+
+### 6.4 T5 模型下载和缓存
 
 `build_real_moconvq_gpt_cache.py` 默认使用：
 
@@ -388,7 +481,19 @@ t5-large
 
 如果下载失败，不应自动退回 hash encoder，因为真实实验要求和原 MoConVQ text-to-motion 逻辑一致。
 
-### 6.3 Retarget 质量检查
+当前机器上已有本地 T5：
+
+```text
+/home/chenjie/cc/robotics/hf_models/t5-large
+```
+
+后续推荐直接传本地路径，减少联网依赖：
+
+```bash
+--text-model /home/chenjie/cc/robotics/hf_models/t5-large
+```
+
+### 6.5 Retarget 质量检查
 
 当前 HumanML3D 到 MoConVQ 的 retarget 是确定性 kinematic 近似：
 
@@ -405,9 +510,9 @@ HumanML3D 22 joints -> MoConVQ 20 bodies
 
 如果视觉检查发现明显脚滑、左右肢异常或朝向错误，下一步应考虑更严格的 BVH/SMPL 到 MoConVQ character retarget。
 
-### 6.4 Val cache 和评估指标
+### 6.6 Val cache 和评估指标
 
-当前脚本支持 `--val-cache`，但还需要正式构建：
+当前脚本支持 `--val-cache`，并已经跑通过真实 val cache。若需要重新构建，可运行：
 
 ```bash
 python Script/stage1/synthesize_long_humanml3d.py \
@@ -440,7 +545,7 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --failure-log stage1_artifacts/gpt_cache/val_failures.jsonl
 ```
 
-### 6.5 长动作生成与展示
+### 6.7 长动作生成与展示
 
 当前 `generate_long_motion.py` 可用于训练后生成 BVH。它默认使用 `T5Tokenizer + T5EncoderModel`，和真实 cache 构建路径一致；如果只想离线调试文本形状，可以显式传 `--text-encoder hash`。
 
@@ -467,4 +572,4 @@ python Script/stage1/generate_long_motion.py \
 
 ## 7. 当前状态一句话总结
 
-Stage1 的代码框架、长序列合成、真实 MoConVQ encoder cache 构建、GPT 微调入口、滚动生成入口和测试都已经完成；下一步主要是跑正式规模实验、确认 T5 cache、检查 retarget 视觉质量，并用训练后的 checkpoint 做生成展示。
+Stage1 的代码框架、长序列合成、真实 MoConVQ encoder cache 构建、GPT 微调入口、滚动生成入口、测试和一次真实训练/生成链路都已经跑通；但当前 BVH 视觉效果不好，不能作为最终实验效果，下一步应重点排查 retarget/cache 质量、长文本-window 对齐、生成策略和 GPT 微调目标之间的问题。
