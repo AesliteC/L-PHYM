@@ -43,13 +43,69 @@ def _write_humanml_fixture(base: Path) -> Path:
     return root
 
 
+def _write_disconnected_humanml_fixture(base: Path) -> Path:
+    root = base / "HumanML3D"
+    for dirname in ("new_joints", "new_joint_vecs", "texts"):
+        (root / dirname).mkdir(parents=True, exist_ok=True)
+    ids = ["000001", "000002"]
+    for split in ("all", "train", "val", "test", "train_val"):
+        (root / f"{split}.txt").write_text("\n".join(ids) + "\n", encoding="utf-8")
+    for idx, sample_id in enumerate(ids):
+        clip = _make_clip(8, float(idx) * 100.0)
+        if idx == 1:
+            fast_drift = np.linspace(0.0, 5.0, 8, dtype=np.float32)
+            clip[:, :, 0] += fast_drift[:, None]
+        np.save(root / "new_joints" / f"{sample_id}.npy", clip)
+        np.save(root / "new_joint_vecs" / f"{sample_id}.npy", np.full((8, 263), idx, dtype=np.float32))
+        (root / "texts" / f"{sample_id}.txt").write_text(
+            f"caption {sample_id}#caption/NOUN {sample_id}/NUM#0.0#0.0\n",
+            encoding="utf-8",
+        )
+    (base / "index.csv").write_text("source_path,start_frame,end_frame,new_name\n", encoding="utf-8")
+    return root
+
+
+def _write_mixed_transition_humanml_fixture(base: Path) -> Path:
+    root = base / "HumanML3D"
+    for dirname in ("new_joints", "new_joint_vecs", "texts"):
+        (root / dirname).mkdir(parents=True, exist_ok=True)
+    ids = ["000001", "000002", "000003"]
+    for split in ("all", "train", "val", "test", "train_val"):
+        (root / f"{split}.txt").write_text("\n".join(ids) + "\n", encoding="utf-8")
+    for idx, sample_id in enumerate(ids):
+        clip = _make_clip(8, float(idx))
+        if idx == 2:
+            fast_drift = np.linspace(0.0, 5.0, 8, dtype=np.float32)
+            clip[:, :, 0] += fast_drift[:, None]
+        np.save(root / "new_joints" / f"{sample_id}.npy", clip)
+        np.save(root / "new_joint_vecs" / f"{sample_id}.npy", np.full((8, 263), idx, dtype=np.float32))
+        (root / "texts" / f"{sample_id}.txt").write_text(
+            f"caption {sample_id}#caption/NOUN {sample_id}/NUM#0.0#0.0\n",
+            encoding="utf-8",
+        )
+    (base / "index.csv").write_text("source_path,start_frame,end_frame,new_name\n", encoding="utf-8")
+    return root
+
+
 class Stage1RealSynthesisTests(unittest.TestCase):
+    def test_transition_score_is_computed_after_boundary_alignment(self):
+        from Script.stage1.synthesize_long_humanml3d import transition_score
+
+        prev = _make_clip(8, root_x=0.0)
+        same_motion_far_away = _make_clip(8, root_x=100.0)
+
+        score = transition_score(prev, same_motion_far_away)
+
+        self.assertLess(score["root_position"], 1e-4)
+        self.assertLess(score["yaw"], 1e-4)
+        self.assertLess(score["total"], 0.05)
+
     def test_synthesize_dataset_writes_manifest_h5_and_summary(self):
         from Script.stage1.synthesize_long_humanml3d import synthesize_dataset
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            root = _write_humanml_fixture(tmp)
+            root = _write_mixed_transition_humanml_fixture(tmp)
             out = tmp / "out"
 
             summary = synthesize_dataset(
@@ -64,6 +120,7 @@ class Stage1RealSynthesisTests(unittest.TestCase):
                 blend_frames=2,
                 caption_joiner=" then ",
                 output_dir=out,
+                allow_forced_transitions=True,
             )
 
             self.assertEqual(summary["num_sequences"], 3)
@@ -83,13 +140,32 @@ class Stage1RealSynthesisTests(unittest.TestCase):
 
             loaded_summary = json.loads((out / "summary.json").read_text())
             self.assertEqual(loaded_summary["config"]["candidate_pool"], 2)
+            self.assertEqual(
+                loaded_summary["transitions"],
+                sum(len(row["transition_scores"]) for row in rows),
+            )
+            self.assertEqual(loaded_summary["duplicate_sequences"], 0)
+
+            log_text = (out / "synthesize.log").read_text(encoding="utf-8")
+            self.assertIn("[start]", log_text)
+            self.assertIn("[sequence_written]", log_text)
+            self.assertIn("[summary]", log_text)
+
+            progress_events = [
+                json.loads(line)["event"]
+                for line in (out / "synthesize_progress.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertIn("start", progress_events)
+            self.assertIn("sequence_written", progress_events)
+            self.assertIn("summary", progress_events)
 
     def test_synthesize_dataset_filters_clips_with_invalid_joint_shape(self):
         from Script.stage1.synthesize_long_humanml3d import synthesize_dataset
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
-            root = _write_humanml_fixture(tmp)
+            root = _write_mixed_transition_humanml_fixture(tmp)
             bad_id = "bad001"
             for split in ("all", "train", "val", "test", "train_val"):
                 with (root / f"{split}.txt").open("a", encoding="utf-8") as f:
@@ -107,7 +183,7 @@ class Stage1RealSynthesisTests(unittest.TestCase):
                 num_sequences=4,
                 min_clips=2,
                 max_clips=2,
-                seed=7,
+                seed=0,
                 candidate_pool=4,
                 transition_max_score=0.35,
                 blend_frames=2,
@@ -120,6 +196,80 @@ class Stage1RealSynthesisTests(unittest.TestCase):
             self.assertEqual(len(rows), 4)
             for row in rows:
                 self.assertNotIn(bad_id, row["sample_ids"])
+
+    def test_synthesize_dataset_rejects_forced_transitions_by_default(self):
+        from Script.stage1.synthesize_long_humanml3d import synthesize_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            root = _write_disconnected_humanml_fixture(tmp)
+
+            with self.assertRaises(RuntimeError):
+                synthesize_dataset(
+                    humanml_root=root,
+                    split="train",
+                    num_sequences=1,
+                    min_clips=2,
+                    max_clips=2,
+                    seed=7,
+                    candidate_pool=2,
+                    transition_max_score=0.001,
+                    blend_frames=2,
+                    caption_joiner=" then ",
+                    output_dir=tmp / "out",
+                )
+
+    def test_synthesize_dataset_can_keep_forced_transitions_when_explicitly_allowed(self):
+        from Script.stage1.synthesize_long_humanml3d import synthesize_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            root = _write_disconnected_humanml_fixture(tmp)
+
+            summary = synthesize_dataset(
+                humanml_root=root,
+                split="train",
+                num_sequences=1,
+                min_clips=2,
+                max_clips=2,
+                seed=0,
+                candidate_pool=2,
+                transition_max_score=0.001,
+                blend_frames=2,
+                caption_joiner=" then ",
+                output_dir=tmp / "out",
+                allow_forced_transitions=True,
+            )
+
+            self.assertEqual(summary["forced_transitions"], 1)
+
+    def test_synthesize_dataset_retries_failed_sequences_until_target_count(self):
+        from Script.stage1.synthesize_long_humanml3d import synthesize_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            root = _write_mixed_transition_humanml_fixture(tmp)
+
+            summary = synthesize_dataset(
+                humanml_root=root,
+                split="train",
+                num_sequences=2,
+                min_clips=2,
+                max_clips=2,
+                seed=0,
+                candidate_pool=1,
+                transition_max_score=0.001,
+                blend_frames=2,
+                caption_joiner=" then ",
+                output_dir=tmp / "out",
+                max_sequence_attempts=50,
+            )
+
+            rows = [json.loads(line) for line in (tmp / "out" / "manifest.jsonl").read_text().splitlines()]
+            self.assertEqual(summary["num_sequences"], 2)
+            self.assertEqual(len(rows), 2)
+            self.assertGreater(summary["failed_sequences"], 0)
+            self.assertGreater(summary["attempted_sequences"], summary["num_sequences"])
 
 
 if __name__ == "__main__":

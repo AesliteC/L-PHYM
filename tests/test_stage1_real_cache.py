@@ -213,6 +213,163 @@ class Stage1RealCacheTests(unittest.TestCase):
             self.assertEqual(cache["captions"], ["walk", "kick"])
             self.assertEqual(seen, ["walk", "kick"])
 
+    def test_build_cache_defaults_to_boundary_aligned_window_captions(self):
+        from Script.stage1.real_moconvq_cache import build_cache_from_long_h5
+
+        class WindowAgent:
+            def encode_seq_all(self, obs, target):
+                latent = torch.ones((1, 12, 768), dtype=torch.float32)
+                indices = torch.arange(12 * 8, dtype=torch.long).reshape(8, 1, 12) % 512
+                return {"latent_vq": latent, "indexs": indices}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            long_h5 = tmp / "long.h5"
+            manifest = tmp / "manifest.jsonl"
+            with h5py.File(long_h5, "w") as h5:
+                group = h5.create_group("seq_000")
+                group.create_dataset("joints_22", data=_toy_joints(length=48))
+                group.create_dataset("clip_boundaries", data=np.asarray([[0, 24], [24, 48]], dtype=np.int32))
+                group.attrs["caption"] = "walk then kick"
+                group.attrs["sample_ids"] = "000001,000002"
+            manifest.write_text(
+                (
+                    '{"sequence_id":"seq_000","caption":"walk then kick",'
+                    '"clip_captions":["walk","kick"],'
+                    '"clip_boundaries":[[0,24],[24,48]],'
+                    '"sample_ids":["000001","000002"]}\n'
+                ),
+                encoding="utf-8",
+            )
+
+            seen = []
+
+            def fake_text_encoder(captions):
+                seen.extend(captions)
+                return (
+                    np.ones((len(captions), 8, 1024), dtype=np.float32),
+                    np.zeros((len(captions), 8), dtype=bool),
+                )
+
+            cache, failures = build_cache_from_long_h5(
+                long_h5_path=long_h5,
+                manifest_path=manifest,
+                agent=WindowAgent(),
+                text_encoder=fake_text_encoder,
+                window_size=6,
+                window_stride=6,
+                rvq_depth=4,
+                fps=20,
+            )
+
+            self.assertEqual(failures, [])
+            self.assertEqual(cache["config"]["caption_mode"], "window")
+            self.assertEqual(cache["captions"], ["walk", "kick"])
+            self.assertEqual(seen, ["walk", "kick"])
+
+    def test_build_cache_defaults_to_clip_aligned_windows(self):
+        from Script.stage1.real_moconvq_cache import build_cache_from_long_h5
+
+        class WindowAgent:
+            def encode_seq_all(self, obs, target):
+                latent = torch.ones((1, 14, 768), dtype=torch.float32)
+                indices = torch.arange(14 * 8, dtype=torch.long).reshape(8, 1, 14) % 512
+                return {"latent_vq": latent, "indexs": indices}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            long_h5 = tmp / "long.h5"
+            manifest = tmp / "manifest.jsonl"
+            with h5py.File(long_h5, "w") as h5:
+                group = h5.create_group("seq_000")
+                group.create_dataset("joints_22", data=_toy_joints(length=56))
+                group.create_dataset("clip_boundaries", data=np.asarray([[0, 28], [28, 56]], dtype=np.int32))
+                group.attrs["caption"] = "walk then kick"
+                group.attrs["sample_ids"] = "000001,000002"
+            manifest.write_text(
+                (
+                    '{"sequence_id":"seq_000","caption":"walk then kick",'
+                    '"clip_captions":["walk","kick"],'
+                    '"clip_boundaries":[[0,28],[28,56]],'
+                    '"sample_ids":["000001","000002"]}\n'
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_text_encoder(captions):
+                return (
+                    np.ones((len(captions), 8, 1024), dtype=np.float32),
+                    np.zeros((len(captions), 8), dtype=bool),
+                )
+
+            cache, failures = build_cache_from_long_h5(
+                long_h5_path=long_h5,
+                manifest_path=manifest,
+                agent=WindowAgent(),
+                text_encoder=fake_text_encoder,
+                window_size=5,
+                window_stride=5,
+                rvq_depth=4,
+                fps=20,
+            )
+
+            self.assertEqual(failures, [])
+            self.assertEqual(cache["config"]["window_policy"], "clip")
+            self.assertEqual(cache["window_ranges"], [(0, 5), (2, 7), (7, 12), (9, 14)])
+            self.assertEqual(cache["captions"], ["walk", "walk", "kick", "kick"])
+
+    def test_build_cache_can_drop_windows_around_forced_transitions(self):
+        from Script.stage1.real_moconvq_cache import build_cache_from_long_h5
+
+        class WindowAgent:
+            def encode_seq_all(self, obs, target):
+                latent = torch.ones((1, 14, 768), dtype=torch.float32)
+                indices = torch.arange(14 * 8, dtype=torch.long).reshape(8, 1, 14) % 512
+                return {"latent_vq": latent, "indexs": indices}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            long_h5 = tmp / "long.h5"
+            manifest = tmp / "manifest.jsonl"
+            with h5py.File(long_h5, "w") as h5:
+                group = h5.create_group("seq_000")
+                group.create_dataset("joints_22", data=_toy_joints(length=56))
+                group.create_dataset("clip_boundaries", data=np.asarray([[0, 28], [28, 56]], dtype=np.int32))
+                group.attrs["caption"] = "walk then kick"
+                group.attrs["sample_ids"] = "000001,000002"
+            manifest.write_text(
+                (
+                    '{"sequence_id":"seq_000","caption":"walk then kick",'
+                    '"clip_captions":["walk","kick"],'
+                    '"clip_boundaries":[[0,28],[28,56]],'
+                    '"transition_forced":[true],'
+                    '"sample_ids":["000001","000002"]}\n'
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_text_encoder(captions):
+                return (
+                    np.ones((len(captions), 8, 1024), dtype=np.float32),
+                    np.zeros((len(captions), 8), dtype=bool),
+                )
+
+            cache, failures = build_cache_from_long_h5(
+                long_h5_path=long_h5,
+                manifest_path=manifest,
+                agent=WindowAgent(),
+                text_encoder=fake_text_encoder,
+                window_size=5,
+                window_stride=5,
+                rvq_depth=4,
+                fps=20,
+                forced_transition_margin=1,
+            )
+
+            self.assertEqual(failures, [])
+            self.assertEqual(cache["window_ranges"], [(0, 5), (8, 13)])
+            self.assertEqual(cache["captions"], ["walk", "kick"])
+
     def test_cache_main_records_text_encoder_configuration(self):
         from Script.stage1 import real_moconvq_cache
 

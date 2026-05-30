@@ -35,6 +35,44 @@ class Stage1GPTTests(unittest.TestCase):
         self.assertEqual(logits.shape, (1, 8, 5, 513))
         self.assertEqual(proj.shape, (1, 8, 768))
 
+    def test_forward_aligns_same_length_latents_without_current_frame_leakage(self):
+        cfg = gpt_config()
+        model = build_text_gpt_model(cfg, device="cpu")
+
+        class FakeTemporal(torch.nn.Module):
+            def forward(self, latents, clip_feature, bert_feature, bert_mask):
+                feature = torch.zeros((latents.shape[0], latents.shape[1] + 1, 768))
+                feature[:, :, 0] = torch.arange(feature.shape[1], dtype=feature.dtype)
+                return feature
+
+        class FakeBase(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.recorded_feature = None
+
+            def forward(self, idx, feature):
+                self.recorded_feature = feature.detach().clone()
+                return feature.unsqueeze(1).expand(-1, idx.shape[1] + 1, -1)
+
+        class FakeHead(torch.nn.Module):
+            def forward(self, x):
+                return torch.zeros((x.shape[0], x.shape[1], 513), dtype=x.dtype)
+
+        fake_base = FakeBase()
+        model.trans_temporal = FakeTemporal()
+        model.trans_base = fake_base
+        model.trans_head = FakeHead()
+
+        latent = torch.zeros(1, 3, 768)
+        indices = torch.zeros(1, 3, 4, dtype=torch.long)
+        clip_feature = torch.zeros(1, 512)
+        bert_feature = torch.zeros(1, 8, 1024)
+        bert_mask = torch.zeros(1, 8, dtype=torch.bool)
+
+        model(latent, indices, clip_feature, bert_feature, bert_mask)
+
+        self.assertEqual(fake_base.recorded_feature[:, 0].tolist(), [0.0, 1.0, 2.0])
+
     def test_sample_accepts_tensor_pre_latent_for_rolling_context(self):
         cfg = gpt_config()
         model = build_text_gpt_model(cfg, device="cpu")
