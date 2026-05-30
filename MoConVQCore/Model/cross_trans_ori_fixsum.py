@@ -75,13 +75,25 @@ class Text2Motion_Transformer(nn.Module):
         return self.block_size
 
     def forward(self, latents, idxs, clip_feature, bert_feature, bert_mask):
-        b, t, c = latents.shape
         b, t, d= idxs.shape
-        feature = self.trans_temporal(latents, clip_feature, bert_feature, bert_mask) # b, t, c
-        if feature.shape[1] == t + 1:
-            feature = feature[:, 1:, :]
-        elif feature.shape[1] != t:
-            raise ValueError(f"unexpected temporal feature length: {feature.shape[1]} vs {t}")
+        if latents.ndim != 3:
+            raise ValueError(f"expected latents shape (B, T, C), got {latents.shape}")
+        if latents.shape[0] != b:
+            raise ValueError(f"latent/index batch mismatch: {latents.shape[0]} vs {b}")
+        if latents.shape[1] == t:
+            temporal_latents = latents[:, :-1, :]
+        elif latents.shape[1] == t - 1:
+            temporal_latents = latents
+        else:
+            raise ValueError(
+                f"expected {t - 1} previous latents for {t} targets, "
+                f"or legacy same-length latents, got {latents.shape[1]}"
+            )
+        c = latents.shape[-1]
+        temporal_input = [] if temporal_latents.shape[1] == 0 else temporal_latents
+        feature = self.trans_temporal(temporal_input, clip_feature, bert_feature, bert_mask) # b, t, c
+        if feature.shape[1] != t:
+            raise ValueError(f"unexpected temporal feature length: {feature.shape[1]} vs target length {t}")
         feat = self.trans_base(idxs.reshape(b*t, d), feature.reshape(b*t, c)) # b*d, t, c
         logits = self.trans_head(feat) # b*d, t, num_vq
         # logits = logits[:, :-1, :]

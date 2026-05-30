@@ -198,6 +198,7 @@ def make_windows(
     window_size: int,
     window_stride: int,
     pad_index: int = 513,
+    include_tail: bool = True,
 ) -> list[tuple[np.ndarray, np.ndarray, tuple[int, int]]]:
     if len(latents) != len(indices):
         raise ValueError("latent/index length mismatch")
@@ -207,7 +208,7 @@ def make_windows(
     if length == 0:
         return []
     starts = [0] if length <= window_size else list(range(0, length - window_size + 1, window_stride))
-    if length > window_size and starts[-1] != length - window_size:
+    if include_tail and length > window_size and starts[-1] != length - window_size:
         starts.append(length - window_size)
     windows = []
     for start in starts:
@@ -218,6 +219,32 @@ def make_windows(
         latent_window[:valid] = latents[start:end]
         index_window[:valid] = indices[start:end]
         windows.append((latent_window, index_window, (start, end)))
+    return windows
+
+
+def make_clip_aligned_windows(
+    latents: np.ndarray,
+    indices: np.ndarray,
+    window_size: int,
+    window_stride: int,
+    clip_boundaries: list[tuple[int, int]],
+    pad_index: int = 513,
+    include_tail: bool = True,
+) -> list[tuple[np.ndarray, np.ndarray, tuple[int, int]]]:
+    windows: list[tuple[np.ndarray, np.ndarray, tuple[int, int]]] = []
+    for clip_start, clip_end in clip_boundaries:
+        if clip_end <= clip_start:
+            continue
+        local_windows = make_windows(
+            latents[clip_start:clip_end],
+            indices[clip_start:clip_end],
+            window_size=window_size,
+            window_stride=window_stride,
+            pad_index=pad_index,
+            include_tail=include_tail,
+        )
+        for latent_window, index_window, (local_start, local_end) in local_windows:
+            windows.append((latent_window, index_window, (clip_start + local_start, clip_start + local_end)))
     return windows
 
 
@@ -303,6 +330,38 @@ def select_window_caption(
     return joiner.join(selected) if selected else full_caption
 
 
+def _latent_clip_boundaries_from_row(
+    row: dict[str, object],
+    latent_length: int,
+    observation_length: int,
+) -> list[tuple[int, int]]:
+    return _manifest_clip_boundaries_to_latent(
+        row.get("clip_boundaries", []),
+        latent_length=latent_length,
+        observation_length=observation_length,
+    )
+
+
+def _filter_boundaries_around_forced_transitions(
+    boundaries: list[tuple[int, int]],
+    forced_transitions: list[object],
+    margin: int,
+) -> tuple[list[tuple[int, int]], bool]:
+    if margin <= 0 or not forced_transitions:
+        return boundaries, False
+    filtered = list(boundaries)
+    changed = False
+    for transition_idx, forced in enumerate(forced_transitions):
+        if not forced or transition_idx + 1 >= len(filtered):
+            continue
+        changed = True
+        left_start, left_end = filtered[transition_idx]
+        right_start, right_end = filtered[transition_idx + 1]
+        filtered[transition_idx] = (left_start, max(left_start, left_end - margin))
+        filtered[transition_idx + 1] = (min(right_end, right_start + margin), right_end)
+    return [(start, end) for start, end in filtered if end > start], changed
+
+
 def build_cache_from_long_h5(
     long_h5_path: Path,
     manifest_path: Path,
@@ -312,13 +371,17 @@ def build_cache_from_long_h5(
     window_stride: int,
     rvq_depth: int,
     fps: int = 20,
-    caption_mode: str = "sequence",
+    caption_mode: str = "window",
     caption_joiner: str = " then ",
+    window_policy: str = "clip",
+    forced_transition_margin: int = 0,
     text_model: str | None = None,
     max_text_length: int | None = None,
 ) -> tuple[dict[str, object], list[dict[str, str]]]:
     if caption_mode not in {"sequence", "window"}:
         raise ValueError(f"unknown caption_mode: {caption_mode}")
+    if window_policy not in {"sequence", "clip"}:
+        raise ValueError(f"unknown window_policy: {window_policy}")
     max_motion_tokens = DEFAULT_TEXT_GPT_BLOCK_SIZE - 1
     if window_size > max_motion_tokens:
         raise ValueError(
@@ -350,12 +413,33 @@ def build_cache_from_long_h5(
                 state = humanml3d_joints_to_moconvq_state(joints, fps=fps)
                 observation = moconvq_state_to_observation(state)
                 latent, index = encode_observation_with_agent(agent, observation, rvq_depth=rvq_depth)
-                for latent_window, index_window, window_range in make_windows(
-                    latent,
-                    index,
-                    window_size=window_size,
-                    window_stride=window_stride,
-                ):
+                latent_clip_boundaries = _latent_clip_boundaries_from_row(
+                    row,
+                    latent_length=len(latent),
+                    observation_length=len(observation),
+                )
+                latent_clip_boundaries, forced_boundaries_trimmed = _filter_boundaries_around_forced_transitions(
+                    latent_clip_boundaries,
+                    forced_transitions=list(row.get("transition_forced", [])),
+                    margin=forced_transition_margin,
+                )
+                if window_policy == "clip" and latent_clip_boundaries:
+                    windows = make_clip_aligned_windows(
+                        latent,
+                        index,
+                        window_size=window_size,
+                        window_stride=window_stride,
+                        clip_boundaries=latent_clip_boundaries,
+                        include_tail=not forced_boundaries_trimmed,
+                    )
+                else:
+                    windows = make_windows(
+                        latent,
+                        index,
+                        window_size=window_size,
+                        window_stride=window_stride,
+                    )
+                for latent_window, index_window, window_range in windows:
                     window_caption = caption
                     if caption_mode == "window":
                         window_caption = select_window_caption(
@@ -405,6 +489,8 @@ def build_cache_from_long_h5(
             "fps": fps,
             "caption_mode": caption_mode,
             "caption_joiner": caption_joiner,
+            "window_policy": window_policy,
+            "forced_transition_margin": forced_transition_margin,
             "text_model": text_model,
             "max_text_length": max_text_length,
         },
@@ -457,8 +543,10 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--max-text-length", type=int, default=256)
     parser.add_argument("--max-failure-rate", type=float, default=0.1)
-    parser.add_argument("--caption-mode", choices=("sequence", "window"), default="sequence")
+    parser.add_argument("--caption-mode", choices=("sequence", "window"), default="window")
     parser.add_argument("--caption-joiner", default=" then ")
+    parser.add_argument("--window-policy", choices=("sequence", "clip"), default="clip")
+    parser.add_argument("--forced-transition-margin", type=int, default=0)
     parser.add_argument("--output", required=True)
     parser.add_argument("--failure-log", required=True)
     args = parser.parse_args(argv)
@@ -478,6 +566,8 @@ def main(argv: Iterable[str] | None = None) -> None:
         fps=args.fps,
         caption_mode=args.caption_mode,
         caption_joiner=args.caption_joiner,
+        window_policy=args.window_policy,
+        forced_transition_margin=args.forced_transition_margin,
         text_model=args.text_model,
         max_text_length=args.max_text_length,
     )
@@ -507,6 +597,9 @@ def main(argv: Iterable[str] | None = None) -> None:
                 "failure_rate": failure_rate,
                 "index_min": idx_min,
                 "index_max": idx_max,
+                "caption_mode": cache["config"]["caption_mode"],
+                "window_policy": cache["config"]["window_policy"],
+                "forced_transition_margin": cache["config"]["forced_transition_margin"],
             },
             indent=2,
         )

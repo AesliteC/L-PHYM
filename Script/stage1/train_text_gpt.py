@@ -81,28 +81,70 @@ def _load_state_dict_flexible(model: nn.Module, checkpoint_path: str) -> None:
         print("unexpected_keys", unexpected[:10])
 
 
-def train_one_epoch(model, loader, optimizer, device):
+def reconstruct_latents_from_rvq_indices(
+    indices: torch.Tensor,
+    embeddings: list[torch.Tensor],
+    pad_index: int = 513,
+) -> torch.Tensor:
+    if indices.ndim != 3:
+        raise ValueError(f"expected indices shape (B, T, D), got {indices.shape}")
+    depth = int(indices.shape[-1])
+    if depth > len(embeddings):
+        raise ValueError(f"need {depth} RVQ embedding tables, got {len(embeddings)}")
+    if depth < 1:
+        raise ValueError("indices must contain at least one RVQ depth")
+
+    first_embedding = embeddings[0]
+    if first_embedding.ndim != 2:
+        raise ValueError(f"expected embedding table shape (V, C), got {first_embedding.shape}")
+    latents = torch.zeros(
+        (*indices.shape[:2], first_embedding.shape[-1]),
+        dtype=first_embedding.dtype,
+        device=indices.device,
+    )
+    for rvq_depth in range(depth):
+        table = embeddings[rvq_depth].to(device=indices.device, dtype=first_embedding.dtype)
+        safe_indices = indices[..., rvq_depth].clone()
+        pad_mask = safe_indices == pad_index
+        if torch.any((safe_indices < 0) | (safe_indices >= table.shape[0])):
+            safe_indices = safe_indices.clamp(min=0, max=table.shape[0] - 1)
+        values = table[safe_indices]
+        if pad_mask.any():
+            values = values.masked_fill(pad_mask.unsqueeze(-1), 0.0)
+        latents = latents + values
+    return latents
+
+
+def train_one_epoch(model, loader, optimizer, device, max_batches: int | None = None):
     model.train()
     total_loss = 0.0
+    batch_count = 0
     for batch in loader:
         latent = batch["latent"].to(device)
         indices = batch["indices"].to(device)
         text_feature = batch["text_feature"].to(device)
         text_mask = batch["text_mask"].to(device)
         clip_feature = torch.zeros((latent.shape[0], 512), device=device)
-        logits, _ = model(latent, indices, clip_feature, text_feature, text_mask)
-        rvq_logits = logits[:, :, 1:, :]
+        if latent.shape[:2] != indices.shape[:2]:
+            raise ValueError(f"latent/index time mismatch: {latent.shape} vs {indices.shape}")
+        gpt_latent = reconstruct_latents_from_rvq_indices(indices, model.embedding)
+        logits, _ = model(gpt_latent[:, :-1, :], indices, clip_feature, text_feature, text_mask)
+        rvq_logits = logits[:, :, : indices.shape[2], :]
         if rvq_logits.shape[2] != indices.shape[2]:
             raise ValueError(f"logit depth mismatch: {rvq_logits.shape} vs {indices.shape}")
         loss = F.cross_entropy(
             rvq_logits.reshape(-1, rvq_logits.shape[-1]),
             indices.reshape(-1),
+            ignore_index=513,
         )
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         total_loss += float(loss.detach().cpu())
-    return total_loss / max(len(loader), 1)
+        batch_count += 1
+        if max_batches is not None and batch_count >= max_batches:
+            break
+    return total_loss / max(batch_count, 1)
 
 
 def main(argv: Iterable[str] | None = None):
@@ -131,8 +173,9 @@ def main(argv: Iterable[str] | None = None):
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     history = []
+    max_batches = 1 if args.smoke else None
     for epoch in range(args.epochs):
-        loss = train_one_epoch(model, train_loader, optimizer, ptu.device)
+        loss = train_one_epoch(model, train_loader, optimizer, ptu.device, max_batches=max_batches)
         history.append({"epoch": epoch, "loss": loss})
         if args.smoke:
             break

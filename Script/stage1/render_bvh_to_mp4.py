@@ -113,6 +113,16 @@ def frame_positions(nodes: list[Node], values: np.ndarray) -> np.ndarray:
     return np.stack([pos for pos in positions if pos is not None], axis=0)
 
 
+def root_motion_display_positions(sampled: np.ndarray, keep_root_motion: bool) -> np.ndarray:
+    if keep_root_motion:
+        return sampled.copy()
+    root_xz = sampled[:, :1, [0, 2]]
+    relative = sampled.copy()
+    relative[:, :, 0] -= root_xz[:, :, 0]
+    relative[:, :, 2] -= root_xz[:, :, 1]
+    return relative
+
+
 def render_bvh_to_mp4(
     src: Path,
     dst: Path,
@@ -121,6 +131,7 @@ def render_bvh_to_mp4(
     width: int,
     height: int,
     max_video_frames: int | None,
+    keep_root_motion: bool,
 ) -> None:
     nodes, data, frame_time = parse_bvh(src)
     src_fps = 1.0 / frame_time if frame_time > 0 else 120.0
@@ -130,10 +141,7 @@ def render_bvh_to_mp4(
         frame_indices = frame_indices[:max_video_frames]
 
     sampled = np.stack([frame_positions(nodes, data[idx]) for idx in frame_indices], axis=0)
-    root_xz = sampled[:, :1, [0, 2]]
-    relative = sampled.copy()
-    relative[:, :, 0] -= root_xz[:, :, 0]
-    relative[:, :, 2] -= root_xz[:, :, 1]
+    relative = root_motion_display_positions(sampled, keep_root_motion=keep_root_motion)
 
     yaw = math.radians(-35.0)
     pitch = math.radians(12.0)
@@ -222,6 +230,13 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=960)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--max-video-frames", type=int, default=None)
+    parser.add_argument(
+        "--keep-root-motion",
+        "--world-space",
+        dest="keep_root_motion",
+        action="store_true",
+        help="Render global root X/Z translation instead of centering the skeleton every frame.",
+    )
     args = parser.parse_args()
 
     source = Path(args.input)
@@ -246,6 +261,7 @@ def main() -> None:
             width=args.width,
             height=args.height,
             max_video_frames=args.max_video_frames,
+            keep_root_motion=args.keep_root_motion,
         )
 
 
