@@ -373,7 +373,7 @@ def build_cache_from_long_h5(
     fps: int = 20,
     caption_mode: str = "window",
     caption_joiner: str = " then ",
-    window_policy: str = "clip",
+    window_policy: str = "sequence",
     forced_transition_margin: int = 0,
     text_model: str | None = None,
     max_text_length: int | None = None,
@@ -545,7 +545,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--max-failure-rate", type=float, default=0.1)
     parser.add_argument("--caption-mode", choices=("sequence", "window"), default="window")
     parser.add_argument("--caption-joiner", default=" then ")
-    parser.add_argument("--window-policy", choices=("sequence", "clip"), default="clip")
+    parser.add_argument("--window-policy", choices=("sequence", "clip"), default="sequence")
     parser.add_argument("--forced-transition-margin", type=int, default=0)
     parser.add_argument("--output", required=True)
     parser.add_argument("--failure-log", required=True)
