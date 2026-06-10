@@ -4,6 +4,8 @@ import argparse
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
+from torch.distributions import Categorical
 
 import MoConVQCore.Utils.pytorch_utils as ptu
 from Script.stage1.train_text_gpt import build_text_gpt_model, gpt_config
@@ -38,6 +40,73 @@ def encode_text_with_hash(text: str, device: str) -> tuple[torch.Tensor, torch.T
     )
 
 
+def sample_model_latents(
+    model,
+    clip_feature: torch.Tensor,
+    bert_feature: torch.Tensor,
+    bert_mask: torch.Tensor,
+    if_categorial: bool = True,
+    max_length: int = 50,
+    pre_latent: torch.Tensor | None = None,
+    suppress_end_token: bool = False,
+):
+    if not suppress_end_token:
+        return model.sample(
+            clip_feature,
+            bert_feature,
+            bert_mask,
+            if_categorial=if_categorial,
+            max_length=max_length,
+            pre_latent=pre_latent,
+        )
+
+    if pre_latent is None:
+        pre_latent = []
+    idxs = []
+    for k in range(max_length):
+        if k == 0:
+            latent = pre_latent
+        else:
+            latent = ls
+
+        fs = model.trans_temporal(latent, clip_feature, bert_feature, bert_mask)
+        cur_fs = fs[:, -1, :]
+        cur_latent = torch.zeros((1, 768), device=cur_fs.device)
+
+        for depth in range(model.max_depth):
+            x = [] if depth == 0 else xs
+            nfeature = model.trans_base(x, cur_fs)
+            logits = model.trans_head(nfeature)[:, -1, :]
+            logits = logits[:, : model.num_vq]
+            probs = F.softmax(logits, dim=-1)
+            if if_categorial:
+                topk = min(50, logits.shape[-1])
+                top_logits, top_indices = torch.topk(logits, k=topk, dim=-1)
+                top_probs = F.softmax(top_logits, dim=-1)
+                dist = Categorical(top_probs)
+                sampled = dist.sample()
+                idx = top_indices.gather(-1, sampled.unsqueeze(-1)).squeeze(-1).unsqueeze(-1)
+            else:
+                _, idx = torch.topk(probs, k=1, dim=-1)
+
+            if depth == 0:
+                xs = idx
+            else:
+                xs = torch.cat((xs, idx), dim=1)
+            idxs.append(idx)
+            cur_latent += model.embedding[depth][idx[0]]
+
+        if k == 0:
+            if isinstance(pre_latent, list) and len(pre_latent) == 0:
+                ls = cur_latent.unsqueeze(1)
+            else:
+                ls = torch.cat((pre_latent, cur_latent.unsqueeze(1)), dim=1)
+        else:
+            ls = torch.cat((ls, cur_latent.unsqueeze(1)), dim=1)
+
+    return ls[:, :-1, :], torch.cat(idxs, dim=0)
+
+
 def sample_latents_rolling(
     model,
     clip_feature: torch.Tensor,
@@ -48,6 +117,7 @@ def sample_latents_rolling(
     chunk_size: int | None = None,
     categorical: bool = True,
     allow_early_stop: bool = False,
+    suppress_end_token: bool = False,
 ) -> torch.Tensor:
     """Generate arbitrary-length latent sequences using fixed-size GPT contexts."""
     if max_length < 1:
@@ -79,13 +149,15 @@ def sample_latents_rolling(
             pre_latent = generated[:, -effective_context:, :]
             context_len = int(pre_latent.shape[1])
         sample_length = current_chunk + 1
-        sampled, _ = model.sample(
+        sampled, _ = sample_model_latents(
+            model,
             clip_feature,
             bert_feature,
             bert_mask,
             if_categorial=categorical,
             max_length=sample_length,
             pre_latent=pre_latent,
+            suppress_end_token=suppress_end_token,
         )
         new_latents = sampled[:, context_len:, :]
         if new_latents.shape[1] < current_chunk:
@@ -118,6 +190,7 @@ def sample_latents_with_prefix(
     chunk_size: int | None = None,
     categorical: bool = True,
     allow_early_stop: bool = False,
+    suppress_end_token: bool = False,
 ) -> torch.Tensor:
     if max_length < 1:
         raise ValueError("max_length must be positive")
@@ -145,13 +218,15 @@ def sample_latents_with_prefix(
                 )
             pre_latent = generated[:, -effective_context:, :]
             context_len = int(pre_latent.shape[1])
-        sampled, _ = model.sample(
+        sampled, _ = sample_model_latents(
+            model,
             clip_feature,
             bert_feature,
             bert_mask,
             if_categorial=categorical,
             max_length=current_chunk + 1,
             pre_latent=pre_latent,
+            suppress_end_token=suppress_end_token,
         )
         new_latents = sampled[:, context_len:, :]
         if new_latents.shape[1] < current_chunk:
@@ -234,6 +309,7 @@ def sample_latents_segmented(
     chunk_size: int | None,
     categorical: bool,
     allow_early_stop: bool,
+    suppress_end_token: bool = False,
     segment_lengths: list[int] | None = None,
 ) -> torch.Tensor:
     if not text_segments:
@@ -268,6 +344,7 @@ def sample_latents_segmented(
             chunk_size=chunk_size,
             categorical=categorical,
             allow_early_stop=allow_early_stop,
+            suppress_end_token=suppress_end_token,
         )
         generated = segment_latents if generated is None else torch.cat([generated, segment_latents], dim=1)
         if segment_latents.shape[1] < current_segment_length and allow_early_stop:
@@ -294,6 +371,7 @@ def main():
     parser.add_argument("--segment-length", type=int, default=None)
     parser.add_argument("--segment-lengths", default=None)
     parser.add_argument("--allow-early-stop", action="store_true")
+    parser.add_argument("--suppress-end-token", action="store_true")
     parser.add_argument("--greedy", action="store_true")
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
@@ -335,6 +413,7 @@ def main():
             chunk_size=args.chunk_size,
             categorical=not args.greedy,
             allow_early_stop=args.allow_early_stop,
+            suppress_end_token=args.suppress_end_token,
         )
     else:
         segments = split_text_segments(args.text, joiner=args.segment_joiner)
@@ -358,6 +437,7 @@ def main():
             chunk_size=args.chunk_size,
             categorical=not args.greedy,
             allow_early_stop=args.allow_early_stop,
+            suppress_end_token=args.suppress_end_token,
         )
     dconv = agent.posterior.decoder.decode_dynamic(cur_embedding)
 

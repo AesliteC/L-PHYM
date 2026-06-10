@@ -213,7 +213,7 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --window-stride 25 \
   --rvq-depth 4 \
   --caption-mode window \
-  --window-policy clip \
+  --window-policy sequence \
   --gpu 0 \
   --output stage1_artifacts/gpt_cache/train_cache.pt \
   --failure-log stage1_artifacts/gpt_cache/train_failures.jsonl
@@ -231,7 +231,7 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --window-stride 25 \
   --rvq-depth 4 \
   --caption-mode window \
-  --window-policy clip \
+  --window-policy sequence \
   --gpu 0 \
   --output stage1_artifacts/gpt_cache/val_cache.pt \
   --failure-log stage1_artifacts/gpt_cache/val_failures.jsonl
@@ -251,7 +251,7 @@ sample_ids:    list[list[str]]
 config:        dict
 ```
 
-当前推荐使用 `--caption-mode window --window-policy clip`。这样每个 50-token motion window 使用对应局部 clip caption，能减少“整段长文本”和“局部动作窗口”不匹配带来的训练噪声。
+当前推荐使用 `--caption-mode window --window-policy sequence`。这样每个 50-token motion window 直接在整条合成长序列上滑窗，允许窗口跨过 clip 边界；同时 `caption-mode=window` 会根据窗口覆盖到的 clip 选择局部或跨段 caption，例如 `walk then turn`，避免把完整长文本无差别复制给所有局部窗口。若要做保守对照实验，可以显式传 `--window-policy clip`，它会回到按原始 clip 边界切窗口的行为。
 
 ### 4. 微调 MoConVQ GPT
 

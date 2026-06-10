@@ -122,6 +122,7 @@ class Stage1RealGenerateTests(unittest.TestCase):
             chunk_size,
             categorical,
             allow_early_stop,
+            suppress_end_token=False,
         ):
             segment_value = bert_feature[0, 0, 0]
             if clip_feature is None:

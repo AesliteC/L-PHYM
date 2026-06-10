@@ -9,6 +9,7 @@ __pycache__
 out/
 build
 stage1_artifacts/
+AGENT.md
 
 *.h5
 *.pth
