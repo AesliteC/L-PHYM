@@ -450,3 +450,83 @@ The FID/R-precision implementation still needs a compatible HumanML3D
 evaluator/feature extractor or retarget-to-SMPL path.  Until that is available,
 video inspection and engineering diagnostics are useful but not sufficient to
 claim improvement over baseline.
+
+## 2026-06-12: BVH engineering metrics script
+
+### Purpose
+
+The updated project goal requires quantitative comparison in addition to video
+rendering.  The MoConVQ paper reports Text2Motion FID and R-precision on
+HumanML3D, but this repository does not currently include the compatible
+HumanML3D evaluator / SMPL motion feature extractor needed for those metrics.
+As an intermediate diagnostic, Stage1 now has a BVH metric script for generated
+baseline-vs-finetuned artifacts.
+
+### Code changes
+
+- Added `Script/stage1/evaluate_bvh_metrics.py`.
+- Added `tests/test_stage1_bvh_metrics.py`.
+- The script reports:
+  - frame count, FPS, duration;
+  - early-stop flag if `--expected-min-frames` is provided;
+  - root path length and root displacement;
+  - root path/displacement ratio;
+  - pose velocity and pose variance;
+  - lagged centered-pose cosine and high-similarity repeat fraction.
+
+These are engineering diagnostics, not a replacement for FID/R-precision.
+
+### Verification
+
+Commands run:
+
+```bash
+source /home/chenjie/miniconda3/etc/profile.d/conda.sh
+conda activate moconvq
+cd /home/chenjie/cc/robotics/MoConVQ
+
+python -m py_compile \
+  Script/stage1/evaluate_bvh_metrics.py \
+  tests/test_stage1_bvh_metrics.py
+
+python -m unittest tests.test_stage1_bvh_metrics -v
+```
+
+Results:
+
+- `py_compile`: passed.
+- `tests.test_stage1_bvh_metrics`: 1 test passed.
+
+### Current top-p artifact metrics
+
+Command:
+
+```bash
+python Script/stage1/evaluate_bvh_metrics.py \
+  'stage1_artifacts/generated_bvh_compare/top_p_stage1_20260612_105644/*.bvh' \
+  --sample-stride 6 \
+  --lags 5,10,20,30 \
+  --expected-min-frames 1200 \
+  --output stage1_artifacts/generated_bvh_compare/top_p_stage1_20260612_105644/summary_metrics_script.json
+```
+
+Selected results:
+
+| Prompt/model | Frames | Duration | Early stop | Root path | Root disp. | Lag-5 repeat >0.995 |
+|---|---:|---:|---|---:|---:|---:|
+| `circle_crouch_stand` baseline top-p | 720 | 6.00 s | yes | 3.935 | 1.127 | 0.87% |
+| `circle_crouch_stand` finetuned top-p | 1656 | 13.80 s | no | 4.521 | 1.025 | 15.13% |
+| `walk_turn_wave` baseline top-p | 696 | 5.80 s | yes | 1.264 | 1.166 | 0.00% |
+| `walk_turn_wave` finetuned top-p | 1656 | 13.80 s | no | 3.256 | 2.286 | 0.00% |
+
+Interpretation:
+
+- Under the current top-p run, baseline still ends early on both prompts when
+  using a 1200-frame threshold.
+- The fine-tuned checkpoint avoids early stop and produces longer BVH files.
+- Longer is not automatically better: `circle_crouch_stand` finetuned has a
+  high short-lag repeat fraction, so video inspection and a future
+  FID/R-precision implementation are still needed before claiming it beats
+  baseline.
+- The next post-calibration retraining run should use this script by default
+  for every generated comparison directory.
