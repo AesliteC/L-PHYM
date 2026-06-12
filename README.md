@@ -49,7 +49,7 @@ The current Stage 1 implementation includes:
 - BVH generation and MP4 rendering scripts;
 - diagnostic tests and experiment documentation.
 
-See the `stage1` branch for the full Stage 1 implementation and running instructions.
+See the `stage1/` directory for the Stage 1 implementation snapshot included in `main`, and the `stage1` branch for the actively developed Stage 1 history and running instructions.
 
 ## Stage 2: Physics-Consistent Deployment
 
@@ -68,8 +68,8 @@ The planned Stage 2 components include:
 This repository is organized by project stage:
 
 ```text
-main    Project overview and high-level documentation
-stage1  Stage 1 implementation: HumanML3D synthesis and MoConVQ-GPT fine-tuning
+main    Project overview plus stage-specific implementation folders
+stage1  Stage 1 implementation history: HumanML3D synthesis and MoConVQ-GPT fine-tuning
 ```
 
 A future `stage2` branch may be added for the physics-consistent deployment stage before the final integration into `main`.
