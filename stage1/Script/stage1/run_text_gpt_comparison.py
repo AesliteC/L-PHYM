@@ -8,6 +8,9 @@ import shlex
 import subprocess
 import sys
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 from Script.stage1.evaluate_bvh_metrics import evaluate_bvh_files, load_bvh_motion
 
 

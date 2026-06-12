@@ -278,11 +278,12 @@ python Script/stage1/train_real_text_gpt.py \
   --lr 1e-5 \
   --weight-decay 0.01 \
   --train-scope temporal_base_head \
-  --depth-weights 1.0,1.0,0.7,0.5 \
+  --depth-weights 1.0,0.7,0.4,0.2 \
   --baseline-kl-weight 0.05 \
-  --kl-temperature 1.0 \
-  --end-token-weight 0.05 \
+  --kl-temperature 2.0 \
+  --end-token-weight 0.01 \
   --progress-conditioning auto \
+  --teacher-progress-conditioning none \
   --progress-scale 1.0 \
   --context-size 51 \
   --gpu 0 \
@@ -302,6 +303,16 @@ config.json
 ```
 
 训练脚本当前使用 segment-aware autoregressive objective：用上一时刻的 motion latent 上下文和当前 segment caption/progress 条件预测当前时刻的 RVQ indices，并对 4 个 RVQ depth 分别计算 token loss。对于 `segment_prefix` cache，前序 prefix token 不参与 CE/KL/accuracy，只作为上下文；当前 segment 的真实 token 才作为监督目标。
+
+训练曲线：
+
+```bash
+python Script/stage1/plot_train_curves.py \
+  --train-log stage1_artifacts/checkpoints/stage1_real/train_log.jsonl \
+  --output-dir stage1_artifacts/figures/stage1_real
+```
+
+使用 baseline KL 时，默认让 teacher 使用原始 zero `clip_feature` 条件，即 `--teacher-progress-conditioning none`。student 可以使用 `--progress-conditioning auto` 学习分段进度；teacher 不接收 progress feature，避免用 baseline 在未训练条件下的输出约束 student。
 
 ### 6. 从文本生成 BVH
 
@@ -329,6 +340,34 @@ python Script/stage1/generate_long_motion.py \
 使用 baseline checkpoint 做对照时，把 `--checkpoint` 换成 `text_generation_GPT.pth` 即可。
 
 对于包含 `" then "` 的复合文本，推荐使用 `--generation-mode segmented`。它会把长文本分成多个子动作段，每段分别编码文本，同时保留 motion latent prefix 作为上下文，并通过 progress conditioning 显式告诉模型当前是第几个动作段。这比“整段长 prompt + rolling generation”更容易表达当前应该执行到哪个动作段。
+
+批量比较 baseline 和微调模型：
+
+```bash
+python Script/stage1/run_text_gpt_comparison.py \
+  --run-id stage1_real_top_p \
+  --prompts stage1_artifacts/prompts.tsv \
+  --baseline-checkpoint text_generation_GPT.pth \
+  --finetuned-checkpoint stage1_artifacts/checkpoints/stage1_real/best_val.pth \
+  --base-data moconvq_base.data \
+  --text-model t5-large \
+  --text-encoder t5 \
+  --max-text-length 256 \
+  --max-length 120 \
+  --generation-mode auto \
+  --context-size 30 \
+  --chunk-size 20 \
+  --top-k 0 \
+  --top-p 0.95 \
+  --temperature 1.0 \
+  --progress-conditioning auto \
+  --baseline-progress-conditioning none \
+  --progress-scale 0.5 \
+  --seed 123 \
+  --gpu 0
+```
+
+这里 baseline 和 finetuned 使用相同 top-p 采样、相同文本分段和相同长度设置；baseline 默认不使用 progress feature，因为原始 checkpoint 没有见过这个条件。当前实验里 `--progress-scale 0.5` 比 `1.0` 的 rollout 更稳，同时仍能缓解 baseline 容易早停的问题。
 
 ### 7. 渲染 BVH 为 MP4
 

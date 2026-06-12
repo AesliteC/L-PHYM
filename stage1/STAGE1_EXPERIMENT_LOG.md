@@ -965,3 +965,198 @@ Result:
 This is still a code-level fix, not a model-quality result.  The next step is to
 rebuild the segment-prefix cache and retrain with the corrected KL/comparison
 protocol.
+
+## 2026-06-12: Segment-prefix retraining result and length-120 top-p comparison
+
+### Dataset and cache
+
+New run:
+
+```text
+run id: segment_progress_stage1_20260612_135307
+long data root: stage1_artifacts/long_humanml3d_segment_progress_segment_progress_stage1_20260612_135307
+cache root: stage1_artifacts/gpt_cache_segment_progress_segment_progress_stage1_20260612_135307
+checkpoint dir: stage1_artifacts/checkpoints/segment_progress_stage1_20260612_135307
+figure dir: stage1_artifacts/figures/segment_progress_stage1_20260612_135307
+```
+
+Synthesis settings:
+
+- `num_sequences=1000` train and `200` val;
+- `min_clips=2`, `max_clips=4`;
+- `candidate_pool=256`;
+- `transition_max_score=0.35`;
+- `drop_overlap_frames=1`;
+- forced transitions disabled.
+
+Synthesis and quality summary:
+
+| Split | Sequences | Avg clips | Avg frames | Avg duration | Forced transitions | Bad transition rate |
+|---|---:|---:|---:|---:|---:|---:|
+| train | 1000 | 2.945 | 414.648 | 20.73 s | 0 | 1.49% |
+| val | 200 | 2.990 | 408.210 | 20.41 s | 0 | 1.76% |
+
+Cache summary:
+
+| Split | Windows | Failed sequences | Index range | Sample mode |
+|---|---:|---:|---|---|
+| train | 6604 | 0 | 0-511 | `segment_prefix` |
+| val | 1321 | 0 | 0-511 | `segment_prefix` |
+
+### Training
+
+Training settings:
+
+- initialized from `text_generation_GPT.pth`;
+- teacher checkpoint: `text_generation_GPT.pth`;
+- `train_scope=temporal_base_head`;
+- `batch_size=12`;
+- `epochs=20`;
+- `lr=1e-5`;
+- `depth_weights=1.0,0.7,0.4,0.2`;
+- `baseline_kl_weight=0.05`;
+- `kl_temperature=2.0`;
+- `end_token_weight=0.01`;
+- student progress conditioning: `auto`;
+- teacher progress conditioning: `none`.
+
+Training completed 20 epochs.  The curve was generated with:
+
+```bash
+python Script/stage1/plot_train_curves.py \
+  --train-log stage1_artifacts/checkpoints/segment_progress_stage1_20260612_135307/train_log.jsonl \
+  --output-dir stage1_artifacts/figures/segment_progress_stage1_20260612_135307
+```
+
+Training curve artifacts:
+
+- `stage1_artifacts/figures/segment_progress_stage1_20260612_135307/loss_accuracy_curve.png`
+- `stage1_artifacts/figures/segment_progress_stage1_20260612_135307/loss_accuracy_curve.pdf`
+- `stage1_artifacts/figures/segment_progress_stage1_20260612_135307/loss_accuracy_curve_data.csv`
+- `stage1_artifacts/figures/segment_progress_stage1_20260612_135307/curve_summary.json`
+
+Key metrics:
+
+| Metric | Value |
+|---|---:|
+| best val epoch | 9 |
+| best val loss | 2.9766 |
+| best val token accuracy | 0.3603 |
+| best val-accuracy epoch | 11 |
+| best val token accuracy | 0.3627 |
+| last train loss | 2.0503 |
+| last train token accuracy | 0.5218 |
+| last val loss | 3.1209 |
+| last val token accuracy | 0.3545 |
+
+Interpretation:
+
+- The new segment-prefix objective trains successfully.
+- Validation improves until around epoch 9-11, then degrades while train loss
+  continues to fall.  This suggests overfitting or a mismatch between the
+  supervised token objective and generation quality.
+- The current default evaluation should use `best_val.pth`, not `last.pth`.
+
+### Top-p comparison
+
+Comparison run:
+
+```text
+run id: segment_progress_stage1_20260612_135307_top_p_len120
+BVH dir: stage1_artifacts/generated_bvh_compare/segment_progress_stage1_20260612_135307_top_p_len120
+video dir: stage1_artifacts/generated_video_compare/segment_progress_stage1_20260612_135307_top_p_len120
+metrics: stage1_artifacts/generated_bvh_compare/segment_progress_stage1_20260612_135307_top_p_len120/summary_metrics_script.json
+```
+
+Generation settings:
+
+- `max_length=120`;
+- `generation_mode=auto`;
+- `context_size=30`;
+- `chunk_size=20`;
+- `top_k=0`;
+- `top_p=0.95`;
+- `temperature=1.0`;
+- `seed=123`;
+- finetuned progress conditioning: `auto`;
+- baseline progress conditioning: `none`.
+
+Frame-level results at 120 Hz:
+
+| Prompt | Baseline frames | Finetuned frames | Baseline duration | Finetuned duration |
+|---|---:|---:|---:|---:|
+| `walk_turn_wave` | 1272 | 2736 | 10.60 s | 22.80 s |
+| `circle_crouch_stand` | 1464 | 2520 | 12.20 s | 21.00 s |
+| `walk_jump_dance` | 1488 | 2736 | 12.40 s | 22.80 s |
+| `sidestep_kick_turn` | 1776 | 2520 | 14.80 s | 21.00 s |
+| average | 1500 | 2628 | 12.50 s | 21.90 s |
+
+Selected engineering diagnostics:
+
+| Model | Avg root path | Avg root displacement | Avg pose velocity | Avg pose variance | Avg lag-20 repeat >0.995 |
+|---|---:|---:|---:|---:|---:|
+| baseline | 4.024 | 1.416 | 17.781 | 152.256 | 0.00% |
+| finetuned | 7.122 | 2.624 | 58.087 | 763.189 | 4.33% |
+
+Video artifacts:
+
+- `stage1_artifacts/generated_video_compare/segment_progress_stage1_20260612_135307_top_p_len120/walk_turn_wave__baseline_top_p_vs_finetuned_top_p.mp4`
+- `stage1_artifacts/generated_video_compare/segment_progress_stage1_20260612_135307_top_p_len120/circle_crouch_stand__baseline_top_p_vs_finetuned_top_p.mp4`
+- `stage1_artifacts/generated_video_compare/segment_progress_stage1_20260612_135307_top_p_len120/walk_jump_dance__baseline_top_p_vs_finetuned_top_p.mp4`
+- `stage1_artifacts/generated_video_compare/segment_progress_stage1_20260612_135307_top_p_len120/sidestep_kick_turn__baseline_top_p_vs_finetuned_top_p.mp4`
+
+Contact sheets:
+
+- `stage1_artifacts/generated_video_compare/segment_progress_stage1_20260612_135307_top_p_len120/contact_sheets/`
+
+Interpretation:
+
+- The segment-progress model fixes a real failure mode from the previous run:
+  it generates substantially longer motions for all four long prompts under the
+  same top-p sampling setup.
+- This is not yet a full win over baseline.  The finetuned outputs have much
+  higher pose velocity and pose variance, and contact sheets suggest less stable
+  motion quality on some prompts.
+- The next correction should reduce the mismatch between token-level validation
+  and rollout quality.  Immediate candidates are:
+  - tune inference progress scale;
+  - reduce train scope or add stronger KL/regularization;
+  - filter or downweight bad synthetic boundaries;
+  - add rollout-oriented diagnostics such as foot sliding and root jerk;
+  - integrate paper-level HumanML3D evaluator metrics when practical.
+
+### Inference progress-scale ablation
+
+A lightweight inference-only ablation was run with the same checkpoint and
+generation settings, changing only:
+
+```text
+progress_scale=0.5
+run id: segment_progress_stage1_20260612_135307_top_p_len120_scale05
+```
+
+Frame-level result:
+
+| Prompt | Baseline frames | Finetuned frames |
+|---|---:|---:|
+| `walk_turn_wave` | 1272 | 2304 |
+| `circle_crouch_stand` | 1464 | 2304 |
+| `walk_jump_dance` | 1488 | 2304 |
+| `sidestep_kick_turn` | 1776 | 2304 |
+| average | 1500 | 2304 |
+
+Aggregate diagnostics:
+
+| Setting | Avg finetuned frames | Avg pose velocity | Avg pose variance | Avg lag-20 repeat >0.995 |
+|---|---:|---:|---:|---:|
+| progress scale 1.0 | 2628 | 58.087 | 763.189 | 4.33% |
+| progress scale 0.5 | 2304 | 53.314 | 539.704 | 0.34% |
+
+Interpretation:
+
+- Reducing progress scale keeps the main benefit over baseline, namely longer
+  generation, while reducing pose variance and long-lag near-repetition.
+- This does not solve all quality issues, but it is the better current inference
+  default for the segment-progress checkpoint.
+- Current recommended comparison command should use `--progress-scale 0.5` for
+  the finetuned model and keep `--baseline-progress-conditioning none`.
