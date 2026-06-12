@@ -591,3 +591,188 @@ Interpretation:
 - The next full experiment should rebuild both train and val caches into a new
   directory, for example `stage1_artifacts/gpt_cache_rest/`, rather than
   overwriting or reusing older uncalibrated cache files.
+
+## 2026-06-12: Clean retraining guardrail
+
+### Purpose
+
+While launching the calibrated-cache retraining run, two tmux sessions
+accidentally wrote into the same checkpoint directory:
+
+```text
+stage1_artifacts/checkpoints/rest_stage1_20260612_115855
+```
+
+The resulting `train_log.jsonl` contains duplicated epoch ids, for example a
+0--13 sequence followed by another epoch 8 from the second writer.  Therefore
+this run is treated as contaminated and must not be used as the official loss
+curve, best checkpoint, or baseline comparison.
+
+### Code fix
+
+`Script/stage1/train_real_text_gpt.py` now adds two protections:
+
+- a `.train.lock` file in the output directory so a second training process
+  cannot write the same checkpoint directory concurrently;
+- a non-empty output-directory check for clean runs, so accidental overwrites
+  fail fast unless `--append-log` is explicitly used for an intentional resume.
+
+### Verification
+
+Commands run:
+
+```bash
+source /home/chenjie/miniconda3/etc/profile.d/conda.sh
+conda activate moconvq
+cd /home/chenjie/cc/robotics/MoConVQ
+
+python -m py_compile Script/stage1/train_real_text_gpt.py tests/test_stage1_real_train.py
+python -m unittest tests.test_stage1_real_train -v
+```
+
+Results:
+
+- `py_compile`: passed.
+- `tests.test_stage1_real_train`: 11 tests passed.
+
+### New clean run
+
+Started a new protected training run:
+
+```text
+run id: rest_locked_stage1_20260612_122510
+checkpoint dir: stage1_artifacts/checkpoints/rest_locked_stage1_20260612_122510
+log: stage1_artifacts/logs/rest_locked_stage1_20260612_122510.log
+cache: stage1_artifacts/gpt_cache_rest/{train_cache.pt,val_cache.pt}
+```
+
+Training setup:
+
+- `rotation_calibration=rest` cache;
+- `train_scope=base_head`;
+- `epochs=20`;
+- `batch_size=8`;
+- `lr=1e-5`;
+- `depth_weights=1.0,0.7,0.4,0.2`;
+- `baseline_kl_weight=0.05`;
+- `kl_temperature=2.0`;
+- `end_token_weight=0.01`;
+- `teacher_checkpoint=text_generation_GPT.pth`.
+
+Initial runtime check:
+
+- exactly one training process was visible on GPU 0;
+- the output directory contained `.train.lock`;
+- `train_log.jsonl` was empty at launch, confirming this is a fresh run.
+
+This is the run that should be used for the next official top-p generation and
+BVH metric comparison after training completes.
+
+## 2026-06-12: Protected retraining result and top-p comparison
+
+### Training result
+
+Clean run:
+
+```text
+run id: rest_locked_stage1_20260612_122510
+checkpoint dir: stage1_artifacts/checkpoints/rest_locked_stage1_20260612_122510
+figure dir: stage1_artifacts/figures/rest_locked_stage1_20260612_122510
+```
+
+The run completed 20 epochs with a monotonic epoch log from 0 to 19.  The
+training lock was released after completion, and no duplicate epoch ids were
+found by `plot_train_curves.py`.
+
+Final/best metrics:
+
+- best validation epoch: 19
+- train loss: 3.6098
+- train CE loss: 3.1149
+- train token accuracy: 0.2692
+- val loss: 3.6440
+- val CE loss: 3.1756
+- val token accuracy: 0.2587
+
+Artifacts:
+
+- `stage1_artifacts/figures/rest_locked_stage1_20260612_122510/loss_accuracy_curve.png`
+- `stage1_artifacts/figures/rest_locked_stage1_20260612_122510/loss_accuracy_curve.pdf`
+- `stage1_artifacts/figures/rest_locked_stage1_20260612_122510/loss_accuracy_curve_data.csv`
+- `stage1_artifacts/figures/rest_locked_stage1_20260612_122510/curve_summary.json`
+
+Interpretation:
+
+- The supervised RVQ token objective is being optimized: training and validation
+  losses decrease, and token accuracy increases.
+- This still does not prove long-text generation quality.  Following the MoConVQ
+  paper, a paper-level comparison should eventually use HumanML3D-style
+  FID/R-precision with a compatible pretrained motion-text evaluator.  This
+  repository currently records BVH engineering diagnostics as an interim check.
+
+### Top-p generation comparison
+
+Comparison run:
+
+```text
+run id: rest_locked_stage1_20260612_122510_top_p
+BVH dir: stage1_artifacts/generated_bvh_compare/rest_locked_stage1_20260612_122510_top_p
+video dir: stage1_artifacts/generated_video_compare/rest_locked_stage1_20260612_122510_top_p
+metrics: stage1_artifacts/generated_bvh_compare/rest_locked_stage1_20260612_122510_top_p/summary_metrics_script.json
+summary: stage1_artifacts/generated_video_compare/rest_locked_stage1_20260612_122510_top_p/summary.json
+```
+
+Generation parameters:
+
+- `top_p=0.95`
+- `top_k=0`
+- `temperature=1.0`
+- `seed=123`
+- `max_length=75`
+- `generation_mode=auto`
+- `context_size=30`
+- `chunk_size=20`
+- `allow_early_stop=true`
+
+Frame-level outcome at 120 Hz:
+
+| Prompt | Baseline frames | Finetuned frames | Baseline early stop | Finetuned early stop |
+|---|---:|---:|---|---|
+| `walk_turn_wave` | 696 | 408 | yes | yes |
+| `circle_crouch_stand` | 720 | 1656 | yes | no |
+| `walk_jump_dance` | 792 | 408 | yes | yes |
+| `sidestep_kick_turn` | 696 | 1656 | yes | no |
+
+Selected engineering metrics:
+
+| Prompt/model | Duration | Root path | Pose velocity mean | Lag-5 repeat >0.995 |
+|---|---:|---:|---:|---:|
+| `circle_crouch_stand` baseline | 6.00 s | 3.935 | 33.337 | 0.87% |
+| `circle_crouch_stand` finetuned | 13.80 s | 4.443 | 14.636 | 0.00% |
+| `sidestep_kick_turn` baseline | 5.80 s | 0.740 | 3.370 | 0.00% |
+| `sidestep_kick_turn` finetuned | 13.80 s | 4.307 | 16.017 | 0.37% |
+| `walk_jump_dance` baseline | 6.60 s | 1.334 | 5.749 | 4.72% |
+| `walk_jump_dance` finetuned | 3.40 s | 1.007 | 13.675 | 0.00% |
+| `walk_turn_wave` baseline | 5.80 s | 1.264 | 5.689 | 0.00% |
+| `walk_turn_wave` finetuned | 3.40 s | 1.007 | 13.675 | 0.00% |
+
+Video artifacts:
+
+- `stage1_artifacts/generated_video_compare/rest_locked_stage1_20260612_122510_top_p/walk_turn_wave__baseline_top_p_vs_finetuned_top_p.mp4`
+- `stage1_artifacts/generated_video_compare/rest_locked_stage1_20260612_122510_top_p/circle_crouch_stand__baseline_top_p_vs_finetuned_top_p.mp4`
+- `stage1_artifacts/generated_video_compare/rest_locked_stage1_20260612_122510_top_p/walk_jump_dance__baseline_top_p_vs_finetuned_top_p.mp4`
+- `stage1_artifacts/generated_video_compare/rest_locked_stage1_20260612_122510_top_p/sidestep_kick_turn__baseline_top_p_vs_finetuned_top_p.mp4`
+
+Interpretation:
+
+- The protected fine-tuned model does not yet demonstrate a stable advantage
+  over baseline on long-text generation.
+- It avoids early stopping for two prompts (`circle_crouch_stand` and
+  `sidestep_kick_turn`) and produces longer motions there.
+- It stops earlier than baseline for two prompts (`walk_turn_wave` and
+  `walk_jump_dance`), producing only 408 frames.
+- This mixed result suggests that the current cache/training setup is still not
+  enough to make the model robustly track long multi-clause prompts.  The next
+  fix should focus on the long-horizon formulation itself: segment-progress
+  conditioning, curriculum on compound prompts, better HumanML3D-to-MoConVQ
+  retarget validation, and eventually paper-level HumanML3D FID/R-precision.

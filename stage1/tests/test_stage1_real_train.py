@@ -210,6 +210,30 @@ class Stage1RealTrainTests(unittest.TestCase):
         self.assertTrue(any(param.requires_grad for param in model.trans_head.parameters()))
         self.assertFalse(any(param.requires_grad for param in model.linear.parameters()))
 
+    def test_validate_output_dir_rejects_nonempty_clean_run(self):
+        from Script.stage1.train_real_text_gpt import validate_output_dir_for_training
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            (output_dir / "train_log.jsonl").write_text("old\n", encoding="utf-8")
+
+            with self.assertRaises(FileExistsError):
+                validate_output_dir_for_training(output_dir, append_log=False)
+
+            validate_output_dir_for_training(output_dir, append_log=True)
+
+    def test_training_run_lock_rejects_concurrent_writer(self):
+        from Script.stage1.train_real_text_gpt import training_run_lock
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            with training_run_lock(output_dir, metadata={"test": True}):
+                self.assertTrue((output_dir / ".train.lock").exists())
+                with self.assertRaises(RuntimeError):
+                    with training_run_lock(output_dir):
+                        pass
+            self.assertFalse((output_dir / ".train.lock").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

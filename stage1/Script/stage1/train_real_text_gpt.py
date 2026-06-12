@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, Sequence
 import argparse
+from contextlib import contextmanager
 import json
+import os
 import time
 
 import torch
@@ -276,14 +278,66 @@ def save_checkpoint(model, output_dir: Path, name: str) -> Path:
     return path
 
 
+def validate_output_dir_for_training(output_dir: Path, append_log: bool) -> None:
+    if append_log:
+        return
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise FileExistsError(
+            f"output directory is not empty: {output_dir}. "
+            "Use a fresh --output-dir for a clean run, or pass --append-log when resuming intentionally."
+        )
+
+
+@contextmanager
+def training_run_lock(output_dir: Path, metadata: dict[str, object] | None = None):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = output_dir / ".train.lock"
+    payload = {
+        "pid": os.getpid(),
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S %z"),
+    }
+    if metadata:
+        payload.update(metadata)
+    acquired = False
+    fd = None
+    try:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError as exc:
+            try:
+                existing = lock_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                existing = "<unable to read lock file>"
+            raise RuntimeError(
+                f"training lock already exists: {lock_path}. "
+                f"Another process may be writing this output directory. Existing lock: {existing}"
+            ) from exc
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = None
+            handle.write(json.dumps(payload, indent=2))
+            handle.write("\n")
+        acquired = True
+        yield lock_path
+    finally:
+        if fd is not None:
+            os.close(fd)
+        if acquired:
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
 def main(argv: Iterable[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-cache", required=True)
     parser.add_argument("--val-cache", default=None)
     parser.add_argument("--init-checkpoint", default="text_generation_GPT.pth")
+    parser.add_argument("--teacher-checkpoint", default=None)
     parser.add_argument("--base-data", default="moconvq_base.data")
     parser.add_argument("--output-dir", default="stage1_artifacts/checkpoints/real_stage1")
     parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--start-epoch", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--weight-decay", type=float, default=0.01)
@@ -296,101 +350,127 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--baseline-kl-weight", type=float, default=0.0)
     parser.add_argument("--kl-temperature", type=float, default=1.0)
     parser.add_argument("--end-token-weight", type=float, default=0.0)
+    parser.add_argument("--append-log", action="store_true")
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args(argv)
 
     ptu.init_gpu(True, gpu_id=args.gpu)
     torch.manual_seed(args.seed)
     output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "config.json").write_text(json.dumps(vars(args), indent=2), encoding="utf-8")
+    validate_output_dir_for_training(output_dir, append_log=args.append_log)
 
-    cfg = gpt_config()
-    model = build_text_gpt_model(cfg, device=ptu.device, base_data_path=args.base_data).to(ptu.device)
-    _load_state_dict_flexible(model, args.init_checkpoint)
-    trainable_parameters = configure_trainable_scope(model, args.train_scope)
-    print(f"train_scope={args.train_scope} trainable_parameters={trainable_parameters}")
-    depth_weights = _parse_depth_weights(args.depth_weights, depth=4)
-    teacher_model = None
-    if args.baseline_kl_weight > 0.0:
-        teacher_model = build_text_gpt_model(cfg, device=ptu.device, base_data_path=args.base_data).to(ptu.device)
-        _load_state_dict_flexible(teacher_model, args.init_checkpoint)
-        teacher_model.eval()
-        for param in teacher_model.parameters():
-            param.requires_grad = False
-        print(f"baseline_kl_weight={args.baseline_kl_weight} kl_temperature={args.kl_temperature}")
-    if depth_weights is not None:
-        print(f"depth_weights={depth_weights}")
-    if args.end_token_weight > 0.0:
-        print(f"end_token_weight={args.end_token_weight}")
+    with training_run_lock(
+        output_dir,
+        metadata={
+            "script": "Script/stage1/train_real_text_gpt.py",
+            "append_log": bool(args.append_log),
+            "start_epoch": int(args.start_epoch),
+            "epochs": int(args.epochs),
+        },
+    ):
+        (output_dir / "config.json").write_text(json.dumps(vars(args), indent=2), encoding="utf-8")
 
-    train_ds = RealStage1CacheDataset(args.train_cache)
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
-    val_loader = None
-    if args.val_cache:
-        val_ds = RealStage1CacheDataset(args.val_cache)
-        val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-
-    optimizer = torch.optim.AdamW(
-        [param for param in model.parameters() if param.requires_grad],
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
-    best_val_loss = float("inf")
-    log_path = output_dir / "train_log.jsonl"
-    max_batches = 1 if args.smoke else None
-
-    with log_path.open("w", encoding="utf-8") as log_file:
-        for epoch in range(args.epochs):
-            started = time.time()
-            train_metrics = _run_epoch(
-                model,
-                train_loader,
-                optimizer,
-                ptu.device,
-                train=True,
-                max_batches=max_batches,
-                depth_weights=depth_weights,
-                teacher_model=teacher_model,
-                kl_weight=args.baseline_kl_weight,
-                kl_temperature=args.kl_temperature,
-                end_token_weight=args.end_token_weight,
+        cfg = gpt_config()
+        model = build_text_gpt_model(cfg, device=ptu.device, base_data_path=args.base_data).to(ptu.device)
+        _load_state_dict_flexible(model, args.init_checkpoint)
+        trainable_parameters = configure_trainable_scope(model, args.train_scope)
+        print(f"train_scope={args.train_scope} trainable_parameters={trainable_parameters}")
+        depth_weights = _parse_depth_weights(args.depth_weights, depth=4)
+        teacher_model = None
+        if args.baseline_kl_weight > 0.0:
+            teacher_checkpoint = args.teacher_checkpoint or args.init_checkpoint
+            teacher_model = build_text_gpt_model(cfg, device=ptu.device, base_data_path=args.base_data).to(ptu.device)
+            _load_state_dict_flexible(teacher_model, teacher_checkpoint)
+            teacher_model.eval()
+            for param in teacher_model.parameters():
+                param.requires_grad = False
+            print(
+                f"baseline_kl_weight={args.baseline_kl_weight} "
+                f"kl_temperature={args.kl_temperature} teacher_checkpoint={teacher_checkpoint}"
             )
-            val_metrics = None
-            if val_loader is not None:
-                with torch.no_grad():
-                    val_metrics = _run_epoch(
-                        model,
-                        val_loader,
-                        optimizer,
-                        ptu.device,
-                        train=False,
-                        max_batches=max_batches,
-                        depth_weights=depth_weights,
-                        teacher_model=teacher_model,
-                        kl_weight=args.baseline_kl_weight,
-                        kl_temperature=args.kl_temperature,
-                        end_token_weight=args.end_token_weight,
-                    )
-                if val_metrics["loss"] < best_val_loss:
-                    best_val_loss = float(val_metrics["loss"])
-                    save_checkpoint(model, output_dir, "best_val.pth")
+        if depth_weights is not None:
+            print(f"depth_weights={depth_weights}")
+        if args.end_token_weight > 0.0:
+            print(f"end_token_weight={args.end_token_weight}")
 
-            if (epoch + 1) % max(args.save_every, 1) == 0:
-                save_checkpoint(model, output_dir, f"checkpoint_epoch_{epoch + 1}.pth")
-            save_checkpoint(model, output_dir, "last.pth")
-            row = {
-                "epoch": epoch,
-                "train": train_metrics,
-                "val": val_metrics,
-                "lr": optimizer.param_groups[0]["lr"],
-                "elapsed_sec": time.time() - started,
-            }
-            log_file.write(json.dumps(row))
-            log_file.write("\n")
-            log_file.flush()
-            if args.smoke:
-                break
+        train_ds = RealStage1CacheDataset(args.train_cache)
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+        val_loader = None
+        if args.val_cache:
+            val_ds = RealStage1CacheDataset(args.val_cache)
+            val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+
+        optimizer = torch.optim.AdamW(
+            [param for param in model.parameters() if param.requires_grad],
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+        )
+        best_val_loss = float("inf")
+        log_path = output_dir / "train_log.jsonl"
+        max_batches = 1 if args.smoke else None
+
+        log_mode = "a" if args.append_log else "w"
+        with log_path.open(log_mode, encoding="utf-8") as log_file:
+            for epoch in range(args.epochs):
+                epoch_id = int(args.start_epoch) + epoch
+                started = time.time()
+                train_metrics = _run_epoch(
+                    model,
+                    train_loader,
+                    optimizer,
+                    ptu.device,
+                    train=True,
+                    max_batches=max_batches,
+                    depth_weights=depth_weights,
+                    teacher_model=teacher_model,
+                    kl_weight=args.baseline_kl_weight,
+                    kl_temperature=args.kl_temperature,
+                    end_token_weight=args.end_token_weight,
+                )
+                val_metrics = None
+                if val_loader is not None:
+                    with torch.no_grad():
+                        val_metrics = _run_epoch(
+                            model,
+                            val_loader,
+                            optimizer,
+                            ptu.device,
+                            train=False,
+                            max_batches=max_batches,
+                            depth_weights=depth_weights,
+                            teacher_model=teacher_model,
+                            kl_weight=args.baseline_kl_weight,
+                            kl_temperature=args.kl_temperature,
+                            end_token_weight=args.end_token_weight,
+                        )
+                    if val_metrics["loss"] < best_val_loss:
+                        best_val_loss = float(val_metrics["loss"])
+                        save_checkpoint(model, output_dir, "best_val.pth")
+
+                if (epoch + 1) % max(args.save_every, 1) == 0:
+                    save_checkpoint(model, output_dir, f"checkpoint_epoch_{epoch + 1}.pth")
+                save_checkpoint(model, output_dir, "last.pth")
+                row = {
+                    "epoch": epoch_id,
+                    "train": train_metrics,
+                    "val": val_metrics,
+                    "lr": optimizer.param_groups[0]["lr"],
+                    "elapsed_sec": time.time() - started,
+                }
+                log_file.write(json.dumps(row))
+                log_file.write("\n")
+                log_file.flush()
+                val_text = "none" if val_metrics is None else (
+                    f"{val_metrics['loss']:.4f}/acc={val_metrics['token_accuracy']:.4f}"
+                )
+                print(
+                    f"epoch={epoch_id} "
+                    f"train={train_metrics['loss']:.4f}/acc={train_metrics['token_accuracy']:.4f} "
+                    f"val={val_text} elapsed={row['elapsed_sec']:.1f}s",
+                    flush=True,
+                )
+                if args.smoke:
+                    break
 
 
 if __name__ == "__main__":
