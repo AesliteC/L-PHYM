@@ -4,6 +4,31 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.distributions import Categorical
 
+
+def top_k_top_p_filtering(logits, top_k=0, top_p=1.0):
+    """Filter logits for nucleus/top-k sampling.
+
+    The original MoConVQ text GPT samples from a fixed top-k set.  Stage1 long
+    text generation benefits from exposing top-p so the sampling set can adapt
+    to the model confidence at each RVQ depth.
+    """
+    if top_k is not None and top_k > 0:
+        top_k = min(int(top_k), logits.size(-1))
+        kth_values = torch.topk(logits, top_k, dim=-1).values[..., -1, None]
+        logits = logits.masked_fill(logits < kth_values, float("-inf"))
+
+    if top_p is not None and 0.0 < float(top_p) < 1.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True, dim=-1)
+        sorted_probs = F.softmax(sorted_logits, dim=-1)
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+        sorted_indices_to_remove = cumulative_probs > float(top_p)
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = False
+        indices_to_remove = torch.zeros_like(logits, dtype=torch.bool)
+        indices_to_remove.scatter_(dim=-1, index=sorted_indices, src=sorted_indices_to_remove)
+        logits = logits.masked_fill(indices_to_remove, float("-inf"))
+    return logits
+
 def PE1d_sincos(seq_length, dim):
     """
     :param d_model: dimension of the model
@@ -100,7 +125,20 @@ class Text2Motion_Transformer(nn.Module):
         # print(logits.shape)
         return logits.reshape(b, t, d+1, self.num_vq+1), self.linear(feature)
 
-    def sample(self, clip_feature, bert_feature, bert_mask, if_categorial=True, max_length = 50, pre_latent = None):
+    def sample(
+        self,
+        clip_feature,
+        bert_feature,
+        bert_mask,
+        if_categorial=True,
+        max_length=50,
+        pre_latent=None,
+        top_k=50,
+        top_p=1.0,
+        temperature=1.0,
+    ):
+        if temperature <= 0:
+            raise ValueError("temperature must be positive")
         if pre_latent is None:
             pre_latent = []
         for k in range(max_length):
@@ -126,7 +164,7 @@ class Text2Motion_Transformer(nn.Module):
                 logits = self.trans_head(nfeature)[:, -1, :]
                 if k < 5:
                     logits = logits[:, :-1]
-                probs = F.softmax(logits, dim=-1)
+                logits = logits / temperature
                 # print(probs.shape)
                 # if k ==0 and i ==0:
                 #     from matplotlib import pyplot as plt
@@ -135,18 +173,15 @@ class Text2Motion_Transformer(nn.Module):
                 #     plt.close()
                 # exit()
                 if if_categorial:
-                    
-                    logits, idx = torch.topk(logits, k=50, dim=-1)
-                    probs = F.softmax(logits, dim=-1)
-                    # probs = prob / prob.sum(dim=-1, keepdim=True)
-                    dist = Categorical(probs)
-                    idx_ = dist.sample()
-                    idx = idx.gather(-1, idx_.unsqueeze(-1)).squeeze(-1)
+                    filtered_logits = top_k_top_p_filtering(logits, top_k=top_k, top_p=top_p)
+                    probs = F.softmax(filtered_logits, dim=-1)
+                    idx = torch.multinomial(probs, num_samples=1).squeeze(-1)
                     if torch.any(idx >= self.num_vq):
                         end_flag = True
                         # break
                     idx = idx.unsqueeze(-1)
                 else:
+                    probs = F.softmax(logits, dim=-1)
                     _, idx = torch.topk(probs, k=1, dim=-1)
                 # print(idx.max())
                 if torch.any(idx >= self.num_vq):

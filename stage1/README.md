@@ -79,24 +79,6 @@ MoConVQ/
 
 `stage1_artifacts/` 是默认实验输出目录。重新合成数据、构建 cache、训练 checkpoint、生成 BVH 和渲染视频都会写到这个目录下。
 
-## 项目代码结构
-
-```text
-.
-├── MoConVQCore/                      # MoConVQ 主模型、环境和工具代码
-│   ├── Model/                        # MoConVQ、RVQ、Text2Motion Transformer 等模型
-│   ├── Env/                          # VCL/ODE 跟踪环境
-│   └── Utils/                        # motion、quaternion、PyTorch 和数据工具
-├── Script/                           # 数据处理、tokenize、训练和生成脚本
-│   └── stage1/                       # Stage1 长动作数据合成、cache、训练和生成入口
-├── tests/                            # Stage1 单元测试和 smoke tests
-├── ModifyODESrc/                     # 修改版 ODE / VclSimuBackend C++/Cython 源码
-├── diff-quaternion/                  # quaternion / rotation C++、CUDA、PyTorch 扩展
-├── Data/                             # world、参数、贴图等运行数据
-├── ThirdParty/                       # Eigen、GLEW、GL 等第三方依赖
-└── stubs/                            # Python 类型 stub
-```
-
 ## 运行环境
 
 建议在已配置好的 MoConVQ 环境（见UPSTREAM_README.md）中运行：

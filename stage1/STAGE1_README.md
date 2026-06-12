@@ -44,10 +44,12 @@ HumanML3D 长序列合成
 
 已经完成过一次真实 cache 构建、GPT 微调和 baseline/finetuned BVH 对比。代码层面可以从合成数据一路跑到生成 `.bvh` 文件，说明工程链路是连通的。
 
-但当前结果还不能作为“效果好”的结论。最新生成对比中，微调模型能比 baseline 更稳定地生成长序列，不容易提前输出 end token；不过从实际 BVH 视觉效果看，动作质量和文本语义对齐仍然不理想，存在待解决问题。当前阶段的结论应写成：
+但此前训练出的 checkpoint 不能作为有效 finetune 结果继续使用。排查发现旧训练代码和推理路径存在两个关键不一致：训练时使用 cache 中的 `latent_vq` 作为上下文 latent，但该 `latent_vq` 来自 MoConVQ encoder 的 8 层 RVQ 总和；Text2Motion GPT 推理时实际只采样前 4 层 RVQ token，并把前 4 层 codebook embedding 求和作为下一步上下文。也就是说，旧训练看到的是 8-layer latent，上线推理看到的是 4-layer latent。同时旧实验默认全量更新 GPT，容易覆盖 baseline 已经具备的文本语义和运动先验；这解释了“baseline 动作还行但没做完，finetuned 更长但视觉效果很差”的现象。
+
+当前代码已修复为：训练时从 `indices` 动态重建与 `model.sample()` 一致的前 4 层 RVQ latent，再用 `previous latent -> current RVQ indices` 训练目标；并新增 `--train-scope {all,base_head,head}` 支持保守微调。需要用修复后的代码重新训练，旧 `fixed_dataset_stage1_20260529_135401` checkpoint 不应再用于效果结论。
 
 ```text
-测试链路已成功跑通，但生成效果仍不好，后续重点是定位并修复数据转换、retarget、训练目标和长文本条件对齐问题。
+测试链路已成功跑通；旧 finetune checkpoint 已判定为无效反例；后续应基于修复后的 GPT 上下文 latent 逻辑重新训练，并优先使用保守微调范围评估。
 ```
 
 ## 2. 工作区结构
@@ -125,6 +127,7 @@ Script/stage1/synthesize_long_humanml3d.py
 - 对后续 clip 做根位置和 yaw 对齐；
 - 使用 `blend-frames` 对拼接边界做短过渡平滑；
 - caption 使用 `" then "` 拼成长文本。
+- 默认拒绝超过 `--transition-max-score` 的 forced transition，避免大量不连续边界污染训练；如果要复现旧数据，必须显式传 `--allow-forced-transitions`。
 
 输出：
 
@@ -179,7 +182,7 @@ Script/stage1/build_real_moconvq_gpt_cache.py
 - 按 `window-size=50` 和 `window-stride=25` 切成训练窗口；
 - 保存为 GPT 训练 cache。
 
-窗口长度默认是 50，因为 `Text2Motion_Transformer` 的 `block_size=52` 会在 motion latent 前额外加入一个 condition token；cache 构建脚本会拒绝 `window-size > 51`。默认 `--max-text-length 256` 会把 T5 文本特征固定为 `(256, 1024)`，过长 caption 会按 T5 tokenizer 截断；正式实验推荐配合 `--caption-mode window`，让每个 50-token motion window 使用对应局部 caption。
+窗口长度默认是 50，因为 `Text2Motion_Transformer` 的 `block_size=52` 会在 motion latent 前额外加入一个 condition token；cache 构建脚本会拒绝 `window-size > 51`。默认 `--max-text-length 256` 会把 T5 文本特征固定为 `(256, 1024)`，过长 caption 会按 T5 tokenizer 截断；`--caption-mode` 当前默认是 `window`，让每个 50-token motion window 使用对应局部 caption。
 
 如果只想先检查 HumanML3D retarget 到 MoConVQ observation 是否合理，可以先运行独立转换脚本。它不会调用 GPT，也不会构建 T5 cache：
 
@@ -229,7 +232,7 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --failure-log stage1_artifacts/gpt_cache/train_failures.jsonl
 ```
 
-`--caption-mode sequence` 会把整条长序列 caption 复制给每个 window；`--caption-mode window` 会根据 `clip_boundaries` 给每个训练 window 选择重叠 clip 的局部 caption。真实长序列实验更推荐 `window`，因为它减少“当前动作窗口和整段长文本不对应”的噪声。
+`--caption-mode sequence` 会把整条长序列 caption 复制给每个 window；`--caption-mode window` 会根据 `clip_boundaries` 给每个训练 window 选择重叠 clip 的局部 caption。真实长序列实验默认使用 `window`，因为它减少“当前动作窗口和整段长文本不对应”的噪声。
 
 ### 3.4 GPT 微调
 
@@ -245,8 +248,15 @@ Script/stage1/train_real_text_gpt.py
 - 从 `moconvq_base.data` 读取 RVQ codebook embedding；
 - 加载 `text_generation_GPT.pth` 作为初始化；
 - 训练目标为每帧 4 层 RVQ token；
+- 使用自回归对齐：`condition, reconstructed_latent[0], ..., reconstructed_latent[T-2]` 预测 `indices[0], ..., indices[T-1]`；
+- `reconstructed_latent` 由 cache 中的前 4 层 RVQ `indices` 和 GPT codebook embedding 动态重建，和 `Text2Motion_Transformer.sample()` 推理时的 latent 空间保持一致；
+- 使用 `logits[:, :, :4, :]` 对齐 4 层 RVQ depth；
+- 支持 `--train-scope all/base_head/head`，其中 `base_head` 会冻结文本/时间条件模块，只微调 RVQ base/head，推荐作为下一轮保守实验起点；
+- 支持 `--depth-weights`，可对 4 层 RVQ CE 加权，优先稳定前两层主体动作 token；
+- 支持 `--baseline-kl-weight` 和 `--kl-temperature`，使用冻结的 baseline GPT 做 logits distillation，降低小规模 HumanML3D 微调破坏原始运动先验的风险；
+- 支持 `--end-token-weight`，在 padding 后第一步加入小权重 end-token 辅助 loss，用于控制早停/不结束倾向；
 - 支持 padding token `513` 的 ignore；
-- 记录 train/val loss、token accuracy、per-depth accuracy；
+- 记录 train/val loss、CE loss、KL loss、end loss、token accuracy、per-depth accuracy；
 - 保存 checkpoint 和日志。
 
 示例命令：
@@ -262,6 +272,11 @@ python Script/stage1/train_real_text_gpt.py \
   --batch-size 8 \
   --lr 1e-5 \
   --weight-decay 0.01 \
+  --train-scope base_head \
+  --depth-weights 1.0,0.7,0.4,0.2 \
+  --baseline-kl-weight 0.05 \
+  --kl-temperature 2.0 \
+  --end-token-weight 0.01 \
   --gpu 0 \
   --seed 0 \
   --save-every 1 \
@@ -321,7 +336,7 @@ OK
 - 已构建真实 MoConVQ GPT cache：
   - `stage1_artifacts/gpt_cache/train_cache.pt`
   - `stage1_artifacts/gpt_cache/val_cache.pt`
-- 已完成一次 `train_real_text_gpt.py` 微调，输出 checkpoint：
+- 已完成过一次旧版 `train_real_text_gpt.py` 微调，输出 checkpoint：
   - `stage1_artifacts/checkpoints/real_stage1/checkpoint_epoch_5.pth`
   - `stage1_artifacts/checkpoints/real_stage1/checkpoint_epoch_10.pth`
   - `stage1_artifacts/checkpoints/real_stage1/checkpoint_epoch_15.pth`
@@ -331,7 +346,7 @@ OK
 - 已使用 `checkpoint_epoch_5.pth` 和 baseline `text_generation_GPT.pth` 生成 BVH 对比：
   - `stage1_artifacts/generated_bvh_compare/real_stage1_epoch5_vs_baseline/`
 
-`checkpoint_epoch_5.pth` 的日志指标：
+注意：这些旧 checkpoint 是在错误训练目标下得到的，不能作为有效模型使用，只能作为问题样例保留。旧 `checkpoint_epoch_5.pth` 对应的日志指标：
 
 ```text
 train loss:       0.09024
@@ -341,7 +356,7 @@ val token acc:    0.99300
 val depth acc:    0.99965 / 0.99044 / 0.99233 / 0.98957
 ```
 
-这说明训练脚本能够拟合 cache 中的 RVQ token 预测任务，但它不等价于最终动作质量好。动作生成质量仍需要通过 BVH 视觉检查、物理合理性和文本语义一致性评估。
+这些指标虚高，不能说明模型学会了正确的自回归生成。修复后 1-batch smoke 的 loss 约为 6.74，明显高于旧指标，符合去掉当前帧/当前 depth 泄漏后的真实训练难度。
 
 已生成的 epoch5 对比中，baseline 在长文本 prompt 上经常提前结束，而 epoch5 微调模型基本能生成到目标长度：
 
@@ -353,7 +368,7 @@ sidestep_kick_turn:    baseline 408 frames,  epoch5 2880 frames
 long_sequence_mixed:   baseline 1176 frames, epoch5 2880 frames
 ```
 
-这只能说明微调后模型更愿意生成长序列，不能说明动作语义和运动质量已经合格。目前实际观察结论是：链路成功，但效果不好，问题待解决。
+这只能说明旧错误模型更愿意生成长序列，不能说明动作语义和运动质量合格。实际 token 诊断显示旧 finetuned 模型后半段会塌缩到重复 RVQ tuple，因此这些结果不能作为最终实验结论。
 
 额外 smoke test：
 
@@ -415,7 +430,7 @@ Script/stage1/train_real_text_gpt.py
 - 合成长序列的拼接边界是否引入不自然速度、朝向或脚部状态突变；
 - `--caption-mode window` 下每个 50-token motion window 对应的局部 caption 是否真正匹配该窗口动作；
 - GPT 只在 50-token window 上训练，而推理时滚动生成更长序列，是否出现分布外累积误差；
-- 微调 loss 很低但生成质量差，可能说明模型主要学到 token 分布/结束 token 行为，而没有真正提升长语义控制；
+- 修复后的训练 loss/accuracy 是否能在不发生 token collapse 的情况下改善生成；
 - 现有评估主要依赖 BVH 视觉检查，还需要更系统的指标，例如生成长度、脚滑、root drift、重建误差、caption-action 对齐人工评分。
 
 建议下一步先做一个最小闭环诊断：
@@ -440,10 +455,13 @@ stage1_artifacts/generated_bvh_compare/real_stage1_epoch5_vs_baseline/
 
 后续修复方向：
 
-- 对比 baseline、epoch5、best_val、last 的同一组 prompt；
-- 检查 finetuned 模型是否只是避免早停，但动作内容重复或语义不对；
+- 先用修复后的训练代码重新训练，不再使用旧 `real_stage1` checkpoint 作有效评估；
+- 对比 baseline、修复后 epoch checkpoint、best_val、last 的同一组 prompt；
+- 检查修复后模型是否仍然只是避免早停，但动作内容重复或语义不对；
 - 对生成 BVH 做逐 prompt 人工记录，例如“是否转身”“是否跳跃”“是否蹲下”“是否明显脚滑”；
-- 尝试不同 `--chunk-size`、`--context-size`、`--temperature`、`--top-k`，避免 greedy decoding 固化坏模式；
+- 优先使用默认 `--generation-mode auto`，或显式 `--generation-mode segmented`，将长文本按 `" then "` 拆成局部 caption 分段生成；
+- 后续评估必须使用当前 top-p / nucleus sampling 代码路径重新生成结果；旧 greedy 或固定 top-k 视频只能作为历史诊断，不能作为当前模型结论；
+- 再尝试不同 `--chunk-size`、`--context-size`、`--temperature`、`--top-p`、`--top-k`，避免单一 decoding 策略固化坏模式；
 - 将训练 cache 中的若干 window 反解成 BVH，检查训练目标本身是否可信；
 - 若 retarget 问题明显，优先重做 HumanML3D 到 MoConVQ character 的转换，而不是继续调 GPT。
 
@@ -464,7 +482,17 @@ stage1_artifacts/generated_bvh_compare/real_stage1_epoch5_vs_baseline/
 
 同时不要只看 token accuracy。token accuracy 高但 BVH 差时，应优先检查数据转换和生成策略。
 
-### 6.4 T5 模型下载和缓存
+### 6.4 Backup Plan: LLM In-Context Motion Token Planning
+
+如果后续确认 HumanML3D 直接拼接后的长序列质量不足，或者修复训练目标后 GPT 仍然在长文本上重复/语义错位，可以采用论文中 MoConVQ LLM integration 的备选路线：把 MoConVQ RVQ indices 当作紧凑动作表示，构建“文本描述 -> token 序列”的 example bank，让大模型通过 in-context learning 规划和重组 token，再用本地 MoConVQ decoder/controller 输出 BVH。
+
+详细方案见：
+
+```text
+STAGE1_BACKUP_PLAN.md
+```
+
+### 6.5 T5 模型下载和缓存
 
 `build_real_moconvq_gpt_cache.py` 默认使用：
 
@@ -493,7 +521,7 @@ t5-large
 --text-model /home/chenjie/cc/robotics/hf_models/t5-large
 ```
 
-### 6.5 Retarget 质量检查
+### 6.6 Retarget 质量检查
 
 当前 HumanML3D 到 MoConVQ 的 retarget 是确定性 kinematic 近似：
 
@@ -510,7 +538,7 @@ HumanML3D 22 joints -> MoConVQ 20 bodies
 
 如果视觉检查发现明显脚滑、左右肢异常或朝向错误，下一步应考虑更严格的 BVH/SMPL 到 MoConVQ character retarget。
 
-### 6.6 Val cache 和评估指标
+### 6.7 Val cache 和评估指标
 
 当前脚本支持 `--val-cache`，并已经跑通过真实 val cache。若需要重新构建，可运行：
 
@@ -527,6 +555,14 @@ python Script/stage1/synthesize_long_humanml3d.py \
   --blend-frames 5 \
   --output-dir stage1_artifacts/long_humanml3d/val
 ```
+
+如果需要复现旧数据才加：
+
+```bash
+--allow-forced-transitions
+```
+
+正式实验默认不要加该参数；否则此前 60% 以上 transition forced 的问题会重新出现。
 
 然后构建 val cache：
 
@@ -545,11 +581,11 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --failure-log stage1_artifacts/gpt_cache/val_failures.jsonl
 ```
 
-### 6.7 长动作生成与展示
+### 6.8 长动作生成与展示
 
 当前 `generate_long_motion.py` 可用于训练后生成 BVH。它默认使用 `T5Tokenizer + T5EncoderModel`，和真实 cache 构建路径一致；如果只想离线调试文本形状，可以显式传 `--text-encoder hash`。
 
-生成脚本已经支持 fixed-context rolling generation：`--max-length` 控制总 latent token 数，`--context-size` 控制每个 chunk 最多回看多少历史 latent，`--chunk-size` 控制每次新采样多少 token。由于 GPT 的 `block_size=52` 还包含一个 condition token，每轮实际历史长度会自动裁剪到 `51 - 当前chunk长度`，避免超过 position/mask 长度。文本侧仍由 `--max-text-length` 控制，默认 256，超长 prompt 会被 T5 tokenizer 截断。
+生成脚本默认 `--generation-mode auto`。如果文本能按 `--segment-joiner` 拆成多段，例如默认的 `" then "`，脚本会自动使用 segmented generation；否则使用 fixed-context rolling generation。rolling 模式下，`--max-length` 控制总 latent token 数，`--context-size` 控制每个 chunk 最多回看多少历史 latent，`--chunk-size` 控制每次新采样多少 token。由于 GPT 的 `block_size=52` 还包含一个 condition token，每轮实际历史长度会自动裁剪到 `51 - 当前chunk长度`，避免超过 position/mask 长度。文本侧仍由 `--max-text-length` 控制，默认 256，超长 prompt 会被 T5 tokenizer 截断。
 
 示例：
 
@@ -569,7 +605,245 @@ python Script/stage1/generate_long_motion.py \
   --seed 0
 ```
 
+长文本动作推荐使用分段生成，让每一段 motion 使用对应局部 caption，而不是每个 rolling chunk 都看同一个完整长文本。分段生成会把上一段末尾的 latent 作为下一段开头的上下文，从而保留动作连续性，同时显式告诉模型当前执行的是哪一段文本。默认 `auto` 会在检测到多段文本时走这条路径；如果没有显式传 `--segment-lengths` 或 `--segment-length`，脚本会把 `--max-length` 自动分配到各文本段：
+
+```bash
+python Script/stage1/generate_long_motion.py \
+  --checkpoint stage1_artifacts/checkpoints/real_stage1_fixed/best_val.pth \
+  --text "a person walks forward then turns around then waves both arms" \
+  --output-bvh stage1_artifacts/generated/demo_segmented.bvh \
+  --base-data moconvq_base.data \
+  --text-encoder t5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --generation-mode auto \
+  --segment-joiner " then " \
+  --segment-lengths 25,25,20 \
+  --context-size 26 \
+  --chunk-size 25 \
+  --gpu 0 \
+  --seed 0
+```
+
+### 6.9 数据问题修复记录
+
+2026-05-29 的评估显示，旧模型虽然能生成更长 BVH，但后半段容易重复或循环。进一步检查发现主要问题在数据侧：
+
+- 旧合成集的 transition score 在候选 clip 还没有平移/yaw 对齐前计算，因此大量本来可对齐的 clip 被误判为差 transition，旧 train manifest 中 `forced_transitions=1261/2016`，约 62.5%。
+- 旧 cache 按整条长序列滑窗，导致约 85% 的训练 window 跨越 clip 边界，约 67% 的 train window 碰到 forced transition。这会把不连续拼接处也当成 GPT 的监督目标。
+- 旧 cache 即使使用 `caption_mode=window`，跨边界窗口仍会把多个局部 caption 拼在一起，模型无法明确知道当前 50-token 窗口应该执行哪一段动作。
+
+当前代码已修复：
+
+- `synthesize_long_humanml3d.py` 在 transition scoring 前先把候选 clip 对齐到前一段末帧，再评价 root velocity、yaw、foot height/velocity。
+- 同一条合成长序列内优先避免重复使用同一个 HumanML3D sample，减少训练数据里天然循环同一动作的情况。
+- `real_moconvq_cache.py` 默认 `--window-policy clip`，即每个训练 window 只来自单个 clip 内部；跨 clip 边界不再直接喂给 GPT。
+- `real_moconvq_cache.py` 支持 `--forced-transition-margin`，如果 manifest 中仍有 forced transition，可以裁掉边界两侧若干 latent token。
+
+因此，旧目录里的 cache 不建议继续训练：
+
+```text
+stage1_artifacts/gpt_cache/train_cache.pt
+stage1_artifacts/gpt_cache/val_cache.pt
+```
+
+建议重建到新目录，避免和旧实验混用：
+
+```bash
+python Script/stage1/synthesize_long_humanml3d.py \
+  --humanml-root ../HumanML3D/HumanML3D \
+  --split train \
+  --num-sequences 1000 \
+  --min-clips 2 \
+  --max-clips 4 \
+  --seed 0 \
+  --candidate-pool 256 \
+  --transition-max-score 0.35 \
+  --blend-frames 5 \
+  --caption-joiner " then " \
+  --output-dir stage1_artifacts/long_humanml3d_fixed/train
+
+python Script/stage1/synthesize_long_humanml3d.py \
+  --humanml-root ../HumanML3D/HumanML3D \
+  --split val \
+  --num-sequences 200 \
+  --min-clips 2 \
+  --max-clips 4 \
+  --seed 1 \
+  --candidate-pool 256 \
+  --transition-max-score 0.35 \
+  --blend-frames 5 \
+  --caption-joiner " then " \
+  --output-dir stage1_artifacts/long_humanml3d_fixed/val
+```
+
+构建新 cache：
+
+```bash
+python Script/stage1/build_real_moconvq_gpt_cache.py \
+  --long-h5 stage1_artifacts/long_humanml3d_fixed/train/long_sequences.h5 \
+  --manifest stage1_artifacts/long_humanml3d_fixed/train/manifest.jsonl \
+  --base-data moconvq_base.data \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 50 \
+  --window-stride 25 \
+  --rvq-depth 4 \
+  --caption-mode window \
+  --window-policy clip \
+  --forced-transition-margin 2 \
+  --gpu 0 \
+  --output stage1_artifacts/gpt_cache_fixed/train_cache.pt \
+  --failure-log stage1_artifacts/gpt_cache_fixed/train_failures.jsonl
+
+python Script/stage1/build_real_moconvq_gpt_cache.py \
+  --long-h5 stage1_artifacts/long_humanml3d_fixed/val/long_sequences.h5 \
+  --manifest stage1_artifacts/long_humanml3d_fixed/val/manifest.jsonl \
+  --base-data moconvq_base.data \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 50 \
+  --window-stride 25 \
+  --rvq-depth 4 \
+  --caption-mode window \
+  --window-policy clip \
+  --forced-transition-margin 2 \
+  --gpu 0 \
+  --output stage1_artifacts/gpt_cache_fixed/val_cache.pt \
+  --failure-log stage1_artifacts/gpt_cache_fixed/val_failures.jsonl
+```
+
+新训练请使用 `stage1_artifacts/gpt_cache_fixed/*.pt`，不要复用旧 cache。
+
+### 6.10 Fixed Dataset 实验结果
+
+2026-05-29 已使用上述 fixed 数据链路重新跑完一次 20 epoch 真实实验，run id：
+
+```text
+fixed_dataset_stage1_20260529_135401
+```
+
+合成阶段现在会同时写两类日志：
+
+```text
+stage1_artifacts/long_humanml3d_fixed/train/synthesize.log
+stage1_artifacts/long_humanml3d_fixed/train/synthesize_progress.jsonl
+stage1_artifacts/long_humanml3d_fixed/val/synthesize.log
+stage1_artifacts/long_humanml3d_fixed/val/synthesize_progress.jsonl
+```
+
+`synthesize.log` 适合直接看终端式摘要，`synthesize_progress.jsonl` 适合后续脚本统计。事件包括 `start`、`sequence_written`、`skip_sequence` 和 `summary`。本次 fixed 合成统计如下：
+
+```text
+train:
+  sequences: 1000
+  transitions: 1945
+  avg_clips: 2.945
+  avg_frames: 416.593
+  forced_transitions: 0
+  duplicate_sequences: 0
+  failed/skipped attempts: 3
+  accepted transition score mean/p50/p95/max:
+    0.020231 / 0.007033 / 0.075246 / 0.297312
+
+val:
+  sequences: 200
+  transitions: 398
+  avg_clips: 2.990
+  avg_frames: 410.200
+  forced_transitions: 0
+  duplicate_sequences: 0
+  failed/skipped attempts: 1
+  accepted transition score mean/p50/p95/max:
+    0.018912 / 0.006431 / 0.068812 / 0.279766
+```
+
+这说明当前拼接逻辑作为“过滤后的实验数据构造”已经比旧版干净很多：没有 forced transition，也没有同一长序列内重复使用同一个 sample。被拒绝的少量样本主要是 foot height / foot velocity 不连续，说明阈值确实在过滤局部接触不自然的边界。但这不等价于拼接逻辑已经能生成自然转场。它只是一个局部边界筛选器，不会合成真正的过渡动作，因此训练 GPT 时仍然默认使用 `--window-policy clip`，不要把跨 clip hard join 当成监督目标。
+
+fixed cache：
+
+```text
+stage1_artifacts/gpt_cache_fixed/train_cache.pt
+  latents:       (2958, 50, 768)
+  indices:       (2958, 50, 4)
+  text_features: (2958, 256, 1024)
+  text_masks:    (2958, 256)
+  caption_mode:  window
+  window_policy: clip
+
+stage1_artifacts/gpt_cache_fixed/val_cache.pt
+  latents:       (598, 50, 768)
+  indices:       (598, 50, 4)
+  text_features: (598, 256, 1024)
+  text_masks:    (598, 256)
+  caption_mode:  window
+  window_policy: clip
+```
+
+20 epoch 微调输出：
+
+```text
+checkpoint:
+  stage1_artifacts/checkpoints/fixed_dataset_stage1_20260529_135401/
+
+log:
+  stage1_artifacts/logs/fixed_dataset_stage1_20260529_135401.log
+
+training curves:
+  stage1_artifacts/figures/fixed_dataset_stage1_20260529_135401/loss_curve.png
+  stage1_artifacts/figures/fixed_dataset_stage1_20260529_135401/loss_accuracy_curve.png
+  stage1_artifacts/figures/fixed_dataset_stage1_20260529_135401/loss_accuracy_curve_data.csv
+```
+
+训练指标：
+
+```text
+epoch 1:
+  train loss: 3.7948
+  val loss:   2.7816
+  train acc:  0.2505
+  val acc:    0.3485
+
+epoch 20 / best val:
+  train loss: 1.6198
+  val loss:   1.7807
+  train acc:  0.5569
+  val acc:    0.5236
+```
+
+对比生成已经导出 BVH 和 MP4：
+
+```text
+BVH:
+  stage1_artifacts/generated_bvh_compare/fixed_dataset_stage1_20260529_135401/
+
+MP4:
+  stage1_artifacts/generated_bvh_compare/fixed_dataset_stage1_20260529_135401_mp4/
+```
+
+Prompt 包括：
+
+```text
+walk_turn_wave        a person walks forward then turns around then waves both arms
+circle_crouch_stand   a person walks in a circle then crouches down then stands up
+walk_jump_dance       a person walks forward then jumps then dances
+sidestep_kick_turn    a person sidesteps to the left then kicks with the right foot then turns around
+```
+
+Baseline 生成时仍然容易提前输出 end token，因此对比文件名使用 `baseline_early`。finetuned best 对 4 个 prompt 都生成了 2160-frame BVH，对应 MP4 约 18 秒；baseline_early 视频长度约 4.0-7.0 秒。这个结果说明 fixed 训练改善了 baseline 早停问题，但“生成更长”不等于“动作语义更好”。最终结论仍需人工检查 MP4 中是否存在后半段重复、动作语义错位、脚滑和姿态异常。
+
+2026-05-29 后续排查确认：该 run 的 checkpoint 仍不能作为有效模型。虽然它在 fixed cache 上的 token loss 明显低于 baseline，但旧训练上下文 latent 与推理 latent 空间不一致，并且全量微调覆盖了 baseline 运动先验，导致视频质量比 baseline 差。修复后的代码已改为从 RVQ indices 重建 GPT 推理同构的 4-layer latent，并增加 `--train-scope base_head/head`。下一轮对比应重新训练，不要继续使用：
+
+```text
+stage1_artifacts/checkpoints/fixed_dataset_stage1_20260529_135401/best_val.pth
+```
+
+如果 fixed GPT 仍然出现循环或局部动作重复，优先排查顺序：
+
+1. 查看 MP4，区分是 GPT token 重复，还是 HumanML3D -> MoConVQ retarget/decode 后动作质量差。
+2. 统计生成 RVQ token 的重复率、end token 位置和 per-depth 分布。
+3. 使用 segmented generation，让每段文本单独编码并继承上一段 motion context，而不是全程用同一个长 prompt rolling。
+4. 若需要真正自然跨段过渡，增加 transition retrieval/library，而不是把 hard join 边界交给 GPT 学。
+5. 如果拼接路线仍不稳定，转向 `STAGE1_BACKUP_PLAN.md` 中的 LLM in-context motion token planning。
+
 
 ## 7. 当前状态一句话总结
 
-Stage1 的代码框架、长序列合成、真实 MoConVQ encoder cache 构建、GPT 微调入口、滚动生成入口、测试和一次真实训练/生成链路都已经跑通；但当前 BVH 视觉效果不好，不能作为最终实验效果，下一步应重点排查 retarget/cache 质量、长文本-window 对齐、生成策略和 GPT 微调目标之间的问题。
+Stage1 的 fixed dataset 工程链路已经完整跑通，但旧 finetuned checkpoint 已判定无效：它改善了早停，却因训练/推理 latent 空间不一致和全量微调覆盖先验导致视频质量差。当前代码已修复训练上下文 latent 重建，并支持保守微调；下一步应重新训练 `--train-scope base_head` 版本，再和 baseline 重新生成 BVH/MP4 对比。

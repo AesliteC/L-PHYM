@@ -80,6 +80,17 @@ class Stage1RealCacheTests(unittest.TestCase):
         self.assertEqual(observation.shape, (24, 323))
         self.assertTrue(np.isfinite(observation).all())
 
+    def test_rest_rotation_calibration_aligns_heuristic_rest_with_moconvq_world(self):
+        from Script.stage1.real_moconvq_cache import (
+            apply_moconvq_rotation_calibration,
+            moconvq_rest_rotation_reference,
+        )
+
+        heuristic_rest, target_rest = moconvq_rest_rotation_reference()
+        calibrated = apply_moconvq_rotation_calibration(heuristic_rest[None], mode="rest")[0]
+        quat_dots = np.abs(np.sum(calibrated * target_rest, axis=-1))
+        self.assertTrue(np.allclose(quat_dots, np.ones_like(quat_dots), atol=1e-5))
+
     def test_build_cache_with_injected_agent_and_text_encoder_pads_short_windows(self):
         from Script.stage1.real_moconvq_cache import build_cache_from_long_h5
 
@@ -121,6 +132,7 @@ class Stage1RealCacheTests(unittest.TestCase):
             self.assertEqual(cache["text_features"].shape, (1, 8, 1024))
             self.assertEqual(cache["indices"][0, 6:].unique().item(), 513)
             self.assertEqual(cache["window_ranges"], [(0, 6)])
+            self.assertEqual(cache["config"]["rotation_calibration"], "rest")
 
     def test_cache_rejects_windows_that_exceed_gpt_temporal_context(self):
         from Script.stage1.real_moconvq_cache import build_cache_from_long_h5

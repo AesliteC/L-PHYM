@@ -48,6 +48,9 @@ def sample_latents_rolling(
     chunk_size: int | None = None,
     categorical: bool = True,
     allow_early_stop: bool = False,
+    top_k: int = 0,
+    top_p: float = 0.95,
+    temperature: float = 1.0,
 ) -> torch.Tensor:
     """Generate arbitrary-length latent sequences using fixed-size GPT contexts."""
     if max_length < 1:
@@ -86,6 +89,9 @@ def sample_latents_rolling(
             if_categorial=categorical,
             max_length=sample_length,
             pre_latent=pre_latent,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
         )
         new_latents = sampled[:, context_len:, :]
         if new_latents.shape[1] < current_chunk:
@@ -118,6 +124,9 @@ def sample_latents_with_prefix(
     chunk_size: int | None = None,
     categorical: bool = True,
     allow_early_stop: bool = False,
+    top_k: int = 0,
+    top_p: float = 0.95,
+    temperature: float = 1.0,
 ) -> torch.Tensor:
     if max_length < 1:
         raise ValueError("max_length must be positive")
@@ -152,6 +161,9 @@ def sample_latents_with_prefix(
             if_categorial=categorical,
             max_length=current_chunk + 1,
             pre_latent=pre_latent,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
         )
         new_latents = sampled[:, context_len:, :]
         if new_latents.shape[1] < current_chunk:
@@ -235,6 +247,9 @@ def sample_latents_segmented(
     categorical: bool,
     allow_early_stop: bool,
     segment_lengths: list[int] | None = None,
+    top_k: int = 0,
+    top_p: float = 0.95,
+    temperature: float = 1.0,
 ) -> torch.Tensor:
     if not text_segments:
         raise ValueError("text_segments must not be empty")
@@ -268,6 +283,9 @@ def sample_latents_segmented(
             chunk_size=chunk_size,
             categorical=categorical,
             allow_early_stop=allow_early_stop,
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
         )
         generated = segment_latents if generated is None else torch.cat([generated, segment_latents], dim=1)
         if segment_latents.shape[1] < current_segment_length and allow_early_stop:
@@ -295,9 +313,18 @@ def main():
     parser.add_argument("--segment-lengths", default=None)
     parser.add_argument("--allow-early-stop", action="store_true")
     parser.add_argument("--greedy", action="store_true")
+    parser.add_argument("--top-k", type=int, default=0)
+    parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+    if args.top_k < 0:
+        raise ValueError("--top-k must be non-negative")
+    if not 0.0 < args.top_p <= 1.0:
+        raise ValueError("--top-p must be in (0, 1]")
+    if args.temperature <= 0.0:
+        raise ValueError("--temperature must be positive")
 
     torch.manual_seed(args.seed)
     ptu.init_gpu(True, gpu_id=args.gpu)
@@ -335,6 +362,9 @@ def main():
             chunk_size=args.chunk_size,
             categorical=not args.greedy,
             allow_early_stop=args.allow_early_stop,
+            top_k=args.top_k,
+            top_p=args.top_p,
+            temperature=args.temperature,
         )
     else:
         segments = split_text_segments(args.text, joiner=args.segment_joiner)
@@ -358,6 +388,9 @@ def main():
             chunk_size=args.chunk_size,
             categorical=not args.greedy,
             allow_early_stop=args.allow_early_stop,
+            top_k=args.top_k,
+            top_p=args.top_p,
+            temperature=args.temperature,
         )
     dconv = agent.posterior.decoder.decode_dynamic(cur_embedding)
 

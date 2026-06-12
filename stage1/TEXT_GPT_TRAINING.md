@@ -18,7 +18,7 @@ text features + motion latent prefix
 | 文件 | 作用 |
 | --- | --- |
 | `MoConVQCore/Model/cross_trans_ori_fixsum.py` | 定义 `Text2Motion_Transformer`、temporal cross-attention、RVQ token transformer 和分类头 |
-| `Script/stage1/train_text_gpt.py` | 旧版/轻量训练入口；使用已经做好的 cache，loss 简单，不处理 padding mask 统计 |
+| `Script/stage1/train_text_gpt.py` | 旧版/轻量训练入口；使用已经做好的 cache，指标较少，仅建议 smoke/debug |
 | `Script/stage1/train_real_text_gpt.py` | 推荐训练入口；支持真实 MoConVQ cache、padding ignore、train/val 指标、checkpoint 保存 |
 | `Script/stage1/real_moconvq_cache.py` | 从合成长序列 H5 构建真实训练 cache |
 | `Script/stage1/convert_humanml3d_to_moconvq_observation.py` | 独立导出 MoConVQ `state_20x13` 和 `observation_323`，用于 retarget 检查 |
@@ -112,10 +112,12 @@ projected:     (B, T, 768)
 训练只使用：
 
 ```python
-rvq_logits = logits[:, :, 1:, :]
+context_latents = latents[:, :-1, :]
+logits, _ = model(context_latents, indices, clip_feature, text_feature, text_mask)
+rvq_logits = logits[:, :, :4, :]
 ```
 
-也就是忽略第 0 个条件位，使用后 4 个深度位置预测 `indices: (B, T, 4)`。
+也就是用 `condition, latent[0], ..., latent[T-2]` 预测 `indices[0], ..., indices[T-1]`，并使用前 4 个 depth slot 对齐 4 层 RVQ token。不要使用旧写法 `logits[:, :, 1:, :]`；旧写法会让 RVQ depth 发生 teacher-forcing 泄漏，导致 loss/accuracy 虚高、推理时 token collapse。
 
 类别数 `513` 的含义：
 
@@ -158,7 +160,7 @@ max-text-length: 256
 
 如果某个 motion 序列长度不足一个 window，cache 构建代码会补齐到 `window-size`，补齐位置的 `indices` 为 `513`。训练 loss 中会用 `ignore_index=513` 跳过这些位置。
 
-`Text2Motion_Transformer` 的 `block_size=52` 会在 motion latent 前额外加入一个 condition token，所以训练 window 的 motion token 数最多是 51；脚本会拒绝 `--window-size > 51`。文本侧默认用 T5 tokenizer 固定到 `--max-text-length 256`，更长 caption 会被截断。正式长序列实验建议使用 `--caption-mode window`，让每个 motion window 只绑定与该窗口重叠的局部 clip caption，降低长 caption 截断和语义不匹配的影响。
+`Text2Motion_Transformer` 的 `block_size=52` 会在 motion latent 前额外加入一个 condition token，所以训练 window 的 motion token 数最多是 51；脚本会拒绝 `--window-size > 51`。文本侧默认用 T5 tokenizer 固定到 `--max-text-length 256`，更长 caption 会被截断。真实长序列实验当前默认使用 `--caption-mode window`，让每个 motion window 只绑定与该窗口重叠的局部 clip caption，降低长 caption 截断和语义不匹配的影响。
 
 快速检查 cache：
 
@@ -229,7 +231,8 @@ stage1_artifacts/long_humanml3d/train/summary.json
 | `--num-sequences` | 合成长序列数量 |
 | `--min-clips` / `--max-clips` | 每条长序列拼接多少个短 clip |
 | `--candidate-pool` | 为每次拼接采样多少候选 clip 计算过渡分数 |
-| `--transition-max-score` | 超过该分数会记为 forced transition，但仍会保留 |
+| `--transition-max-score` | 默认拒绝超过该分数的 transition，避免坏边界进入训练 |
+| `--allow-forced-transitions` | 显式保留超过阈值的 transition，仅用于复现旧数据或 debug |
 | `--blend-frames` | clip 边界过渡平滑帧数 |
 | `--caption-joiner` | 多个短 caption 拼接成长 caption 的连接词 |
 | `--output-dir` | 输出目录 |
@@ -379,6 +382,11 @@ python Script/stage1/train_real_text_gpt.py \
   --batch-size 8 \
   --lr 1e-5 \
   --weight-decay 0.01 \
+  --train-scope base_head \
+  --depth-weights 1.0,0.7,0.4,0.2 \
+  --baseline-kl-weight 0.05 \
+  --kl-temperature 2.0 \
+  --end-token-weight 0.01 \
   --gpu 0 \
   --seed 0 \
   --save-every 1 \
@@ -411,6 +419,11 @@ stage1_artifacts/checkpoints/real_stage1/
 | `--batch-size` | `8` | batch size |
 | `--lr` | `1e-5` | AdamW 学习率 |
 | `--weight-decay` | `0.01` | AdamW weight decay |
+| `--train-scope` | `all` | 微调范围；真实实验优先用 `head` 或 `base_head`，避免破坏 baseline 运动先验 |
+| `--depth-weights` | `None` | RVQ depth 加权 CE，例如 `1.0,0.7,0.4,0.2` 会更强调前两层主体动作 token |
+| `--baseline-kl-weight` | `0.0` | baseline distillation 权重；大于 0 时加载冻结的 `--init-checkpoint` 作为 teacher，约束 student logits 不要偏离 baseline 太多 |
+| `--kl-temperature` | `1.0` | KL distillation temperature；推荐从 `2.0` 开始 |
+| `--end-token-weight` | `0.0` | padding 后第一步预测 end token 的辅助 loss；推荐小权重如 `0.01`，用于缓解乱早停/永不结束 |
 | `--gpu` | `0` | 使用的 GPU id |
 | `--seed` | `0` | `torch.manual_seed()` |
 | `--save-every` | `1` | 每多少个 epoch 保存一次 `checkpoint_epoch_N.pth` |
@@ -440,14 +453,17 @@ stage1_artifacts/checkpoints/real_stage1/
 loss 计算：
 
 ```python
-logits, _ = model(latent, indices, clip_feature, text_feature, text_mask)
-rvq_logits = logits[:, :, 1:, :]
+context_latent = latent[:, :-1, :]
+logits, _ = model(context_latent, indices, clip_feature, text_feature, text_mask)
+rvq_logits = logits[:, :, :indices.shape[-1], :]
 loss = F.cross_entropy(
     rvq_logits.reshape(-1, rvq_logits.shape[-1]),
     indices.reshape(-1),
     ignore_index=513,
 )
 ```
+
+这个对齐是关键修复点。旧训练曾直接用 `latent` 与同一时刻 `indices` 对齐，并使用 `logits[:, :, 1:, :]`，等价于让模型在训练时看到当前帧 latent 和部分当前 depth token；该目标不是 MoConVQ 论文中的 autoregressive `p(I_k | I_<k)`，会造成验证指标虚高但生成阶段重复/塌缩。
 
 `clip_feature` 当前固定为全 0：
 
@@ -593,7 +609,7 @@ python Script/stage1/generate_long_motion.py \
 1. 加载 MoConVQ agent 和 moconvq_base.data
 2. 加载 Text2Motion_Transformer checkpoint
 3. 默认用 T5-large 生成 (1, L, 1024) 文本特征
-4. 使用 fixed-context rolling generation 分块调用 model.sample()
+4. 默认 `auto`：多段文本使用 segmented generation，单段文本使用 fixed-context rolling generation
 5. 用 MoConVQ posterior decoder 解码 latent
 6. 用 tracker/controller 写出 BVH
 ```
@@ -610,6 +626,27 @@ python Script/stage1/generate_long_motion.py \
 ```
 
 这解决的是 MoConVQ GPT 固定 `block_size=52` 的限制：长动作不是一次性把全部历史塞进 GPT，而是每次只保留最近一段 latent 作为上下文滚动生成。由于 block 里还要放一个 condition token，每轮实际历史长度会自动裁剪到 `51 - 当前chunk长度`，例如 `--chunk-size 25` 时最多回看 26 个历史 latent。长文本仍受 T5 tokenizer 的 `max_length` 约束；如果 prompt 很长，应在输入层面拆成更短的阶段描述，或提高 `--max-text-length` 后重新确认显存和速度。
+
+长文本动作推荐使用分段生成；默认 `auto` 会在检测到多段文本时走这条路径：
+
+```bash
+python Script/stage1/generate_long_motion.py \
+  --checkpoint stage1_artifacts/checkpoints/real_stage1_fixed/best_val.pth \
+  --text "a person walks forward then turns around then waves both arms" \
+  --output-bvh stage1_artifacts/generated/demo_segmented.bvh \
+  --base-data moconvq_base.data \
+  --text-encoder t5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --generation-mode auto \
+  --segment-joiner " then " \
+  --segment-lengths 25,25,20 \
+  --context-size 26 \
+  --chunk-size 25 \
+  --gpu 0 \
+  --seed 0
+```
+
+`segmented` 模式会把长文本按 joiner 切成局部 caption，每段单独编码文本并生成一段 motion latent；从第二段开始，脚本会把已生成序列末尾的 latent 作为 prefix/context 传给 GPT，只把新生成的 latent 追加到全局序列。`--segment-lengths` 可为每个子动作指定不同 latent token 数，数量必须和分段数一致；如果没有显式传 `--segment-lengths` 或 `--segment-length`，脚本会把 `--max-length` 自动分配到各文本段。它不是完整的高层 planner，但比“每个 rolling chunk 都看同一整段长文本”更符合 MoConGPT 的 50-code 短片段设计。
 
 ## 11. 常见问题
 
@@ -932,7 +969,7 @@ python Script/stage1/generate_long_motion.py \
 
 ```text
 1. forward 中 temporal feature 是否去掉额外 condition frame
-2. rvq_logits = logits[:, :, 1:, :] 是否和 indices 对齐
+2. `rvq_logits = logits[:, :, :4, :]` 是否和 indices 对齐
 3. padding index 是否固定为 513
 4. cache 构建时 rvq_depth 是否为 4
 5. text feature 维度是否为 1024

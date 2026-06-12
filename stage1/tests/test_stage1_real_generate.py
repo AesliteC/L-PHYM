@@ -69,12 +69,25 @@ class Stage1RealGenerateTests(unittest.TestCase):
 
             def __init__(self):
                 self.context_lengths = []
+                self.sampling_args = []
 
             def get_block_size(self):
                 return self.block_size
 
-            def sample(self, clip_feature, bert_feature, bert_mask, if_categorial, max_length, pre_latent):
+            def sample(
+                self,
+                clip_feature,
+                bert_feature,
+                bert_mask,
+                if_categorial,
+                max_length,
+                pre_latent,
+                top_k=50,
+                top_p=1.0,
+                temperature=1.0,
+            ):
                 self.context_lengths.append(0 if pre_latent is None else int(pre_latent.shape[1]))
+                self.sampling_args.append((top_k, top_p, temperature))
                 context = 0 if pre_latent is None else int(pre_latent.shape[1])
                 total = context + max_length - 1
                 return torch.ones((1, total, 768), dtype=torch.float32), torch.zeros((max_length, 4), dtype=torch.long)
@@ -89,11 +102,15 @@ class Stage1RealGenerateTests(unittest.TestCase):
             context_size=5,
             chunk_size=4,
             categorical=False,
+            top_k=7,
+            top_p=0.9,
+            temperature=0.8,
         )
 
         self.assertEqual(latents.shape, (1, 18, 768))
         self.assertLessEqual(max(model.context_lengths), 5)
         self.assertEqual(model.context_lengths, [0, 3, 3, 3, 5])
+        self.assertEqual(model.sampling_args, [(7, 0.9, 0.8)] * 5)
 
     def test_segmented_generation_uses_local_text_per_segment(self):
         import torch
@@ -122,6 +139,9 @@ class Stage1RealGenerateTests(unittest.TestCase):
             chunk_size,
             categorical,
             allow_early_stop,
+            top_k=50,
+            top_p=1.0,
+            temperature=1.0,
         ):
             segment_value = bert_feature[0, 0, 0]
             if clip_feature is None:
@@ -168,7 +188,18 @@ class Stage1RealGenerateTests(unittest.TestCase):
             def get_block_size(self):
                 return 8
 
-            def sample(self, clip_feature, bert_feature, bert_mask, if_categorial, max_length, pre_latent):
+            def sample(
+                self,
+                clip_feature,
+                bert_feature,
+                bert_mask,
+                if_categorial,
+                max_length,
+                pre_latent,
+                top_k=50,
+                top_p=1.0,
+                temperature=1.0,
+            ):
                 context = 0 if pre_latent is None else int(pre_latent.shape[1])
                 self.pre_context_lengths.append(context)
                 value = float(bert_feature[0, 0, 0])
@@ -230,7 +261,18 @@ class Stage1RealGenerateTests(unittest.TestCase):
             def get_block_size(self):
                 return 8
 
-            def sample(self, clip_feature, bert_feature, bert_mask, if_categorial, max_length, pre_latent):
+            def sample(
+                self,
+                clip_feature,
+                bert_feature,
+                bert_mask,
+                if_categorial,
+                max_length,
+                pre_latent,
+                top_k=50,
+                top_p=1.0,
+                temperature=1.0,
+            ):
                 context = 0 if pre_latent is None else int(pre_latent.shape[1])
                 value = float(bert_feature[0, 0, 0])
                 body = torch.full((1, max_length - 1, 768), value)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Iterable
 import argparse
+from functools import lru_cache
 import json
 import traceback
 
@@ -36,6 +37,8 @@ MOCONVQ_BODY_NAMES = (
 )
 
 DEFAULT_TEXT_GPT_BLOCK_SIZE = 52
+DEFAULT_MOCONVQ_WORLD_JSON = Path(__file__).resolve().parents[2] / "Data/Misc/world.json"
+ROTATION_CALIBRATION_CHOICES = ("none", "rest")
 
 MOCONVQ_PARENT = np.asarray(
     [-1, 0, 1, 0, 0, 3, 4, 5, 6, 7, 8, 2, 2, 2, 12, 13, 14, 15, 16, 17],
@@ -105,6 +108,69 @@ def _ensure_quat_continuity(quats: np.ndarray) -> np.ndarray:
     return fixed
 
 
+@lru_cache(maxsize=8)
+def _load_moconvq_world_rest_pose(world_json_path: str) -> tuple[np.ndarray, np.ndarray]:
+    with Path(world_json_path).open("r", encoding="utf-8") as f:
+        world = json.load(f)
+    bodies = world["CharacterList"]["Characters"][0]["Bodies"][: len(MOCONVQ_BODY_NAMES)]
+    names = [str(body["Name"]) for body in bodies]
+    if names != list(MOCONVQ_BODY_NAMES):
+        raise ValueError(
+            "MoConVQ world body order does not match Stage1 mapping: "
+            f"expected {list(MOCONVQ_BODY_NAMES)}, got {names}"
+        )
+    positions = np.asarray([body["Position"] for body in bodies], dtype=np.float32)
+    quats = np.asarray([body["Quaternion"] for body in bodies], dtype=np.float32)
+    return positions, quats
+
+
+def moconvq_rest_rotation_reference(
+    world_json_path: Path | str | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return heuristic rest quats and target MoConVQ world rest quats.
+
+    HumanML3D joint positions do not carry rigid-body local frame rotations.
+    The heuristic retarget estimates each body quaternion from bone directions,
+    but MoConVQ's simulator character uses the rigid-body frames defined in
+    world.json.  The rest-pose reference lets us remove the static frame offset
+    introduced by the heuristic axes.
+    """
+
+    world_path = Path(world_json_path) if world_json_path is not None else DEFAULT_MOCONVQ_WORLD_JSON
+    rest_positions, target_rest_quats = _load_moconvq_world_rest_pose(str(world_path.resolve()))
+    identity_axes = (
+        np.array([1.0, 0.0, 0.0], dtype=np.float32),
+        UP.copy(),
+        np.array([0.0, 0.0, 1.0], dtype=np.float32),
+    )
+    heuristic_rest_quats = np.stack(
+        [_bone_quat(body_id, rest_positions, identity_axes) for body_id in range(len(MOCONVQ_BODY_NAMES))],
+        axis=0,
+    ).astype(np.float32)
+    return heuristic_rest_quats, target_rest_quats.copy()
+
+
+def apply_moconvq_rotation_calibration(
+    quats: np.ndarray,
+    mode: str = "rest",
+    world_json_path: Path | str | None = None,
+) -> np.ndarray:
+    if mode not in ROTATION_CALIBRATION_CHOICES:
+        raise ValueError(f"unknown rotation calibration mode: {mode}")
+    if mode == "none":
+        return quats.astype(np.float32, copy=True)
+    if quats.ndim != 3 or quats.shape[1:] != (len(MOCONVQ_BODY_NAMES), 4):
+        raise ValueError(f"expected quaternion shape (T, 20, 4), got {quats.shape}")
+
+    heuristic_rest, target_rest = moconvq_rest_rotation_reference(world_json_path)
+    frames = quats.shape[0]
+    current = Rotation.from_quat(quats.reshape(-1, 4))
+    rest_inv = Rotation.from_quat(np.tile(heuristic_rest[None, :, :], (frames, 1, 1)).reshape(-1, 4)).inv()
+    target = Rotation.from_quat(np.tile(target_rest[None, :, :], (frames, 1, 1)).reshape(-1, 4))
+    calibrated = (current * rest_inv * target).as_quat().reshape(quats.shape).astype(np.float32)
+    return calibrated
+
+
 def _linear_velocity(values: np.ndarray, fps: int) -> np.ndarray:
     velocity = np.zeros_like(values, dtype=np.float32)
     if len(values) < 2:
@@ -125,7 +191,12 @@ def _angular_velocity(quats: np.ndarray, fps: int) -> np.ndarray:
     return avel.astype(np.float32)
 
 
-def humanml3d_joints_to_moconvq_state(joints_22: np.ndarray, fps: int = 20) -> np.ndarray:
+def humanml3d_joints_to_moconvq_state(
+    joints_22: np.ndarray,
+    fps: int = 20,
+    rotation_calibration: str = "rest",
+    world_json_path: Path | str | None = None,
+) -> np.ndarray:
     if joints_22.ndim != 3 or joints_22.shape[1:] != (22, 3):
         raise ValueError(f"expected joints shape (T, 22, 3), got {joints_22.shape}")
     positions = joints_22[:, HUMANML3D_TO_MOCONVQ, :].astype(np.float32)
@@ -134,6 +205,12 @@ def humanml3d_joints_to_moconvq_state(joints_22: np.ndarray, fps: int = 20) -> n
         axes = _frame_axes(joints_22[t].astype(np.float32))
         for body_id in range(20):
             quats[t, body_id] = _bone_quat(body_id, positions[t], axes)
+    quats = _ensure_quat_continuity(quats)
+    quats = apply_moconvq_rotation_calibration(
+        quats,
+        mode=rotation_calibration,
+        world_json_path=world_json_path,
+    )
     quats = _ensure_quat_continuity(quats)
     linear_vel = _linear_velocity(positions, fps=fps)
     angular_vel = _angular_velocity(quats, fps=fps)
@@ -377,6 +454,8 @@ def build_cache_from_long_h5(
     forced_transition_margin: int = 0,
     text_model: str | None = None,
     max_text_length: int | None = None,
+    rotation_calibration: str = "rest",
+    world_json_path: Path | str | None = None,
 ) -> tuple[dict[str, object], list[dict[str, str]]]:
     if caption_mode not in {"sequence", "window"}:
         raise ValueError(f"unknown caption_mode: {caption_mode}")
@@ -410,7 +489,12 @@ def build_cache_from_long_h5(
                 if sample_ids is None:
                     sample_ids = str(group.attrs.get("sample_ids", "")).split(",")
                 joints = group["joints_22"][:]
-                state = humanml3d_joints_to_moconvq_state(joints, fps=fps)
+                state = humanml3d_joints_to_moconvq_state(
+                    joints,
+                    fps=fps,
+                    rotation_calibration=rotation_calibration,
+                    world_json_path=world_json_path,
+                )
                 observation = moconvq_state_to_observation(state)
                 latent, index = encode_observation_with_agent(agent, observation, rvq_depth=rvq_depth)
                 latent_clip_boundaries = _latent_clip_boundaries_from_row(
@@ -493,6 +577,8 @@ def build_cache_from_long_h5(
             "forced_transition_margin": forced_transition_margin,
             "text_model": text_model,
             "max_text_length": max_text_length,
+            "rotation_calibration": rotation_calibration,
+            "world_json": str(world_json_path) if world_json_path is not None else str(DEFAULT_MOCONVQ_WORLD_JSON),
         },
     }
     return cache, failures
@@ -547,6 +633,8 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--caption-joiner", default=" then ")
     parser.add_argument("--window-policy", choices=("sequence", "clip"), default="clip")
     parser.add_argument("--forced-transition-margin", type=int, default=0)
+    parser.add_argument("--rotation-calibration", choices=ROTATION_CALIBRATION_CHOICES, default="rest")
+    parser.add_argument("--world-json", default=str(DEFAULT_MOCONVQ_WORLD_JSON))
     parser.add_argument("--output", required=True)
     parser.add_argument("--failure-log", required=True)
     args = parser.parse_args(argv)
@@ -570,6 +658,8 @@ def main(argv: Iterable[str] | None = None) -> None:
         forced_transition_margin=args.forced_transition_margin,
         text_model=args.text_model,
         max_text_length=args.max_text_length,
+        rotation_calibration=args.rotation_calibration,
+        world_json_path=Path(args.world_json),
     )
 
     output = Path(args.output)
