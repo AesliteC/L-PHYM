@@ -530,3 +530,64 @@ Interpretation:
   baseline.
 - The next post-calibration retraining run should use this script by default
   for every generated comparison directory.
+
+## 2026-06-12: Calibrated cache construction smoke
+
+### Purpose
+
+Before rebuilding the full training cache, verify that the new
+`rotation_calibration=rest` path works end-to-end through:
+
+```text
+HumanML3D joints -> calibrated MoConVQ state -> state2ob -> encode_seq_all
+-> RVQ indices/latents -> T5 features -> training cache
+```
+
+### Command
+
+```bash
+source /home/chenjie/miniconda3/etc/profile.d/conda.sh
+conda activate moconvq
+cd /home/chenjie/cc/robotics/MoConVQ
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+python Script/stage1/build_real_moconvq_gpt_cache.py \
+  --long-h5 stage1_artifacts/long_humanml3d_fixed/val/long_sequences.h5 \
+  --manifest stage1_artifacts/long_humanml3d_fixed/val/manifest.jsonl \
+  --base-data moconvq_base.data \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 50 \
+  --window-stride 25 \
+  --rvq-depth 4 \
+  --caption-mode window \
+  --window-policy clip \
+  --forced-transition-margin 2 \
+  --rotation-calibration rest \
+  --gpu 0 \
+  --max-failure-rate 0.5 \
+  --output /tmp/stage1_rest_cache_smoke/val_cache.pt \
+  --failure-log /tmp/stage1_rest_cache_smoke/val_failures.jsonl
+```
+
+### Result
+
+- windows: 598
+- failed sequences: 0
+- failure rate: 0.0
+- index range: 0 to 511
+- `latents`: `(598, 50, 768)`
+- `indices`: `(598, 50, 4)`
+- `text_features`: `(598, 256, 1024)`
+- `text_masks`: `(598, 256)`
+- `config.rotation_calibration`: `rest`
+- `config.window_policy`: `clip`
+- `config.caption_mode`: `window`
+
+Interpretation:
+
+- The calibrated retarget path is compatible with MoConVQ encoder and T5 cache
+  construction.
+- The next full experiment should rebuild both train and val caches into a new
+  directory, for example `stage1_artifacts/gpt_cache_rest/`, rather than
+  overwriting or reusing older uncalibrated cache files.
