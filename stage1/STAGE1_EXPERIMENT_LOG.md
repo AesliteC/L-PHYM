@@ -776,3 +776,123 @@ Interpretation:
   fix should focus on the long-horizon formulation itself: segment-progress
   conditioning, curriculum on compound prompts, better HumanML3D-to-MoConVQ
   retarget validation, and eventually paper-level HumanML3D FID/R-precision.
+
+## 2026-06-12: Segment-progress conditioning and segment-prefix training fix
+
+### Purpose
+
+The previous top-p comparison showed that the fine-tuned model did not reliably
+track multi-clause prompts. Two formulation issues were identified:
+
+- segmented inference could treat a segment-level early stop as a global prompt
+  stop, so later text segments were skipped;
+- training examples were still primarily clip/window examples, so the model did
+  not explicitly learn `previous motion prefix + current segment text -> next
+  segment tokens`.
+
+This change is a code-level fix and preparation for the next real experiment. It
+is not a claim that Stage1 now beats baseline. A new cache and new training run
+are required before making any model-quality conclusion.
+
+### Code changes
+
+- Added `Script/stage1/segment_conditioning.py`.
+  - Builds deterministic 512-d segment/progress features.
+  - Injects them through MoConVQ GPT's existing `clip_feature` pathway, so the
+    transformer architecture and pretrained checkpoint format remain compatible.
+- Updated cache construction in `Script/stage1/real_moconvq_cache.py`.
+  - Added `--sample-mode segment_prefix`.
+  - Added `--prefix-size`.
+  - Cache now records `target_masks`, `segment_idxs`, `num_segments`,
+    `segment_progress`, `prefix_ranges`, `target_ranges`, `segment_ranges`, `prefix_lengths`, and
+    `end_masks`.
+  - In `segment_prefix` mode, each sample contains a previous motion prefix plus
+    current segment target tokens. Prefix tokens are context only.
+- Updated training loss in `Script/stage1/train_real_text_gpt.py`.
+  - CE, KL, token accuracy and per-depth accuracy now respect `target_mask`.
+  - Prefix tokens are ignored by the supervised objective.
+  - End-token auxiliary loss is applied at the first padding step after the
+    supervised target region.
+  - Added `--progress-conditioning`, `--progress-scale`, and `--context-size`.
+  - Added `--train-scope temporal_base_head`, because progress conditioning
+    enters through the temporal/text condition pathway; freezing that pathway
+    would prevent the model from learning the new condition signal.
+- Updated generation.
+  - `Script/stage1/generate_long_motion.py` passes segment progress during
+    segmented generation.
+  - Segment-level early stop no longer breaks the whole multi-clause prompt.
+  - `Script/stage1/export_baseline_intermediate.py` and
+    `Script/stage1/run_text_gpt_comparison.py` expose the same progress
+    conditioning parameters.
+- Updated HumanML3D synthesis and diagnostics.
+  - `synthesize_long_humanml3d.py` adds `--drop-overlap-frames`, defaulting to
+    1, to avoid duplicating the aligned boundary frame.
+  - Added `Script/stage1/diagnose_long_humanml3d_quality.py` to report root,
+    velocity, yaw and foot discontinuities at synthetic clip boundaries.
+
+### Verification
+
+Commands run:
+
+```bash
+source /home/chenjie/miniconda3/etc/profile.d/conda.sh
+conda activate moconvq
+cd /home/chenjie/cc/robotics/MoConVQ
+
+python -m py_compile \
+  Script/stage1/segment_conditioning.py \
+  Script/stage1/real_moconvq_cache.py \
+  Script/stage1/train_real_text_gpt.py \
+  Script/stage1/generate_long_motion.py \
+  Script/stage1/export_baseline_intermediate.py \
+  Script/stage1/run_text_gpt_comparison.py \
+  Script/stage1/synthesize_long_humanml3d.py \
+  Script/stage1/diagnose_long_humanml3d_quality.py
+
+python -m unittest \
+  tests.test_stage1_real_cache \
+  tests.test_stage1_real_train \
+  tests.test_stage1_real_generate \
+  tests.test_stage1_real_synthesis \
+  tests.test_stage1_gpt \
+  tests.test_stage1_intermediate_export \
+  tests.test_stage1_text_gpt_comparison \
+  -v
+```
+
+Result:
+
+- `py_compile`: passed.
+- Relevant Stage1 tests: 56 tests passed.
+
+### Next experiment
+
+The next real run should rebuild data/cache and retrain, rather than reusing the
+old `rest_locked_stage1_20260612_122510` cache/checkpoint as the main result.
+Recommended flow:
+
+```bash
+python Script/stage1/synthesize_long_humanml3d.py ... --drop-overlap-frames 1
+
+python Script/stage1/diagnose_long_humanml3d_quality.py \
+  --long-h5 <split>/long_sequences.h5 \
+  --manifest <split>/manifest.jsonl \
+  --output-json <split>/dataset_quality.json \
+  --transition-jsonl <split>/transition_quality.jsonl
+
+python Script/stage1/build_real_moconvq_gpt_cache.py \
+  ... \
+  --caption-mode window \
+  --window-policy clip \
+  --sample-mode segment_prefix \
+  --prefix-size 25
+
+python Script/stage1/train_real_text_gpt.py \
+  ... \
+  --train-scope temporal_base_head \
+  --progress-conditioning auto \
+  --progress-scale 1.0
+```
+
+Only after this new run should baseline-vs-finetuned top-p BVH/MP4 comparisons
+be treated as the current Stage1 result.

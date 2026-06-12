@@ -57,6 +57,7 @@ MoConVQ/
   Script/stage1/
     humanml3d.py
     synthesize_long_humanml3d.py
+    diagnose_long_humanml3d_quality.py
     convert_humanml3d_to_moconvq_observation.py
     real_moconvq_cache.py
     build_real_moconvq_gpt_cache.py
@@ -129,6 +130,7 @@ python Script/stage1/synthesize_long_humanml3d.py \
   --candidate-pool 256 \
   --transition-max-score 0.35 \
   --blend-frames 5 \
+  --drop-overlap-frames 1 \
   --caption-joiner " then " \
   --output-dir stage1_artifacts/long_humanml3d/train
 ```
@@ -146,6 +148,7 @@ python Script/stage1/synthesize_long_humanml3d.py \
   --candidate-pool 256 \
   --transition-max-score 0.35 \
   --blend-frames 5 \
+  --drop-overlap-frames 1 \
   --caption-joiner " then " \
   --output-dir stage1_artifacts/long_humanml3d/val
 ```
@@ -156,13 +159,29 @@ python Script/stage1/synthesize_long_humanml3d.py \
 manifest.jsonl       # 每条长序列的样本来源、caption、边界和过渡分数
 long_sequences.h5    # joints_22、joint_vecs_263、clip boundaries 等数据
 summary.json         # 合成参数和统计信息
+synthesize.log       # 合成日志
+synthesize_progress.jsonl
 ```
 
-合成逻辑会先采样一个 HumanML3D clip，再从候选池中选择 transition score 较低的后续 clip。score 会考虑根位置、根速度、朝向、脚部高度和脚部速度。拼接时会对后一个 clip 做根位置和 yaw 对齐，并在边界处做短窗口平滑。
+合成逻辑会先采样一个 HumanML3D clip，再从候选池中选择 transition score 较低的后续 clip。score 会考虑根位置、根速度、朝向、脚部高度和脚部速度。拼接时会对后一个 clip 做根位置和 yaw 对齐，在边界处做短窗口平滑，并默认丢弃后一个 clip 的首个重叠帧，减少边界重复帧带来的监督噪声。
 
 默认不接受超过阈值的 forced transition。如果需要放宽合成条件，可以调大 `--transition-max-score`，或者显式加入 `--allow-forced-transitions` 做对照实验。
 
-### 2. 可选：检查 MoConVQ observation 转换
+### 2. 检查合成数据质量
+
+正式构建 cache 之前，建议先检查拼接边界质量：
+
+```bash
+python Script/stage1/diagnose_long_humanml3d_quality.py \
+  --long-h5 stage1_artifacts/long_humanml3d/train/long_sequences.h5 \
+  --manifest stage1_artifacts/long_humanml3d/train/manifest.jsonl \
+  --output-json stage1_artifacts/long_humanml3d/train/dataset_quality.json \
+  --transition-jsonl stage1_artifacts/long_humanml3d/train/transition_quality.jsonl
+```
+
+这个诊断会统计每个拼接边界的 root gap、root velocity gap、yaw gap、脚高度差和脚速度差。它不是论文级评估指标，但可以提前发现明显坏的拼接数据，避免把错误监督喂给 GPT。
+
+### 3. 可选：检查 MoConVQ observation 转换
 
 如果只想检查 retarget 和 observation 是否能生成，可以先运行：
 
@@ -181,7 +200,7 @@ state_20x13:     (T, 20, 13)
 observation_323: (T, 323)
 ```
 
-### 3. 构建 GPT 训练 cache
+### 4. 构建 GPT 训练 cache
 
 训练集 cache：
 
@@ -196,6 +215,8 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --rvq-depth 4 \
   --caption-mode window \
   --window-policy clip \
+  --sample-mode segment_prefix \
+  --prefix-size 25 \
   --gpu 0 \
   --output stage1_artifacts/gpt_cache/train_cache.pt \
   --failure-log stage1_artifacts/gpt_cache/train_failures.jsonl
@@ -214,6 +235,8 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --rvq-depth 4 \
   --caption-mode window \
   --window-policy clip \
+  --sample-mode segment_prefix \
+  --prefix-size 25 \
   --gpu 0 \
   --output stage1_artifacts/gpt_cache/val_cache.pt \
   --failure-log stage1_artifacts/gpt_cache/val_failures.jsonl
@@ -229,13 +252,19 @@ text_masks:    (N, L)
 captions:      list[str]
 sequence_ids:  list[str]
 window_ranges: list[tuple[int, int]]
+target_masks:  (N, 50)
+end_masks:     (N, 50)
+segment_idxs:  (N,)
+num_segments:  (N,)
+segment_progress: (N,)
+prefix_ranges / target_ranges / segment_ranges
 sample_ids:    list[list[str]]
 config:        dict
 ```
 
-当前推荐使用 `--caption-mode window --window-policy clip`。这样每个 50-token motion window 使用对应局部 clip caption，能减少“整段长文本”和“局部动作窗口”不匹配带来的训练噪声。
+当前推荐使用 `--caption-mode window --window-policy clip --sample-mode segment_prefix`。这样每个训练样本包含“前序 motion prefix + 当前动作段 caption + 当前动作段目标 token”。loss 只监督当前动作段，prefix 只作为上下文。这个组织方式比单纯的 clip/window 训练更接近长文本分段生成时的使用方式。
 
-### 4. 微调 MoConVQ GPT
+### 5. 微调 MoConVQ GPT
 
 ```bash
 python Script/stage1/train_real_text_gpt.py \
@@ -248,11 +277,14 @@ python Script/stage1/train_real_text_gpt.py \
   --batch-size 8 \
   --lr 1e-5 \
   --weight-decay 0.01 \
-  --train-scope base_head \
+  --train-scope temporal_base_head \
   --depth-weights 1.0,1.0,0.7,0.5 \
   --baseline-kl-weight 0.05 \
   --kl-temperature 1.0 \
   --end-token-weight 0.05 \
+  --progress-conditioning auto \
+  --progress-scale 1.0 \
+  --context-size 51 \
   --gpu 0 \
   --seed 0 \
   --save-every 1 \
@@ -269,9 +301,9 @@ train_log.jsonl
 config.json
 ```
 
-训练脚本当前使用 corrected autoregressive objective：用上一时刻的 motion latent 上下文预测当前时刻的 RVQ indices，并对 4 个 RVQ depth 分别计算 token loss。这个设置比直接把当前 latent 喂给当前 token prediction 更接近推理时的自回归条件。
+训练脚本当前使用 segment-aware autoregressive objective：用上一时刻的 motion latent 上下文和当前 segment caption/progress 条件预测当前时刻的 RVQ indices，并对 4 个 RVQ depth 分别计算 token loss。对于 `segment_prefix` cache，前序 prefix token 不参与 CE/KL/accuracy，只作为上下文；当前 segment 的真实 token 才作为监督目标。
 
-### 5. 从文本生成 BVH
+### 6. 从文本生成 BVH
 
 使用微调 checkpoint：
 
@@ -287,15 +319,18 @@ python Script/stage1/generate_long_motion.py \
   --segment-length 30 \
   --context-size 51 \
   --chunk-size 25 \
+  --top-p 0.95 \
+  --temperature 1.0 \
+  --progress-conditioning auto \
   --gpu 0 \
   --seed 0
 ```
 
 使用 baseline checkpoint 做对照时，把 `--checkpoint` 换成 `text_generation_GPT.pth` 即可。
 
-对于包含 `" then "` 的复合文本，推荐使用 `--generation-mode segmented`。它会把长文本分成多个子动作段，每段分别编码文本，同时保留 motion latent prefix 作为上下文。这比“整段长 prompt + rolling generation”更容易表达当前应该执行到哪个动作段。
+对于包含 `" then "` 的复合文本，推荐使用 `--generation-mode segmented`。它会把长文本分成多个子动作段，每段分别编码文本，同时保留 motion latent prefix 作为上下文，并通过 progress conditioning 显式告诉模型当前是第几个动作段。这比“整段长 prompt + rolling generation”更容易表达当前应该执行到哪个动作段。
 
-### 6. 渲染 BVH 为 MP4
+### 7. 渲染 BVH 为 MP4
 
 ```bash
 python Script/stage1/render_bvh_to_mp4.py \

@@ -28,6 +28,10 @@ from Script.stage1.intermediate_motion_format import (
     write_intermediate_npz,
 )
 from Script.stage1.real_moconvq_cache import build_loaded_moconvq_agent
+from Script.stage1.segment_conditioning import (
+    PROGRESS_CONDITIONING_CHOICES,
+    add_progress_to_clip_feature,
+)
 from Script.stage1.train_text_gpt import build_text_gpt_model, gpt_config
 
 
@@ -172,14 +176,29 @@ def _sample_segmented_with_indices(
     top_k: int,
     top_p: float,
     temperature: float,
+    progress_conditioning: str,
+    progress_scale: float,
 ) -> tuple[torch.Tensor, np.ndarray]:
     block_size = int(model.get_block_size())
     max_context = block_size - 1
     context_size = min(int(context_size), max_context)
     generated: torch.Tensor | None = None
     index_parts: list[np.ndarray] = []
-    for segment, segment_len in zip(text_segments, segment_lengths):
+    total_segments = len(text_segments)
+    for segment_idx, (segment, segment_len) in enumerate(zip(text_segments, segment_lengths)):
         bert_feature, bert_mask = _encode_text(text_encoder, segment, text_model, max_text_length, device)
+        segment_clip_feature = add_progress_to_clip_feature(
+            clip_feature,
+            mode=progress_conditioning,
+            segment_idx=segment_idx,
+            num_segments=total_segments,
+            segment_progress=float(segment_idx / max(total_segments - 1, 1)) if total_segments > 1 else 0.0,
+            prefix_lengths=0 if generated is None else min(int(generated.shape[1]), int(context_size)),
+            context_size=context_size,
+            scale=progress_scale,
+            has_segment_metadata=True,
+            is_segmented=True,
+        )
         produced = 0
         while produced < segment_len:
             remaining = segment_len - produced
@@ -195,7 +214,7 @@ def _sample_segmented_with_indices(
                 pre_latent = generated[:, -effective_context:, :]
             new_latents, indices = _sample_chunk_with_indices(
                 model,
-                clip_feature=clip_feature,
+                clip_feature=segment_clip_feature,
                 bert_feature=bert_feature,
                 bert_mask=bert_mask,
                 current_chunk=current_chunk,
@@ -237,6 +256,8 @@ def _sample_latents_and_indices(
     top_k: int,
     top_p: float,
     temperature: float,
+    progress_conditioning: str,
+    progress_scale: float,
     device: torch.device,
 ) -> tuple[torch.Tensor, np.ndarray, str]:
     mode = resolve_generation_mode(generation_mode, prompt, segment_joiner)
@@ -282,6 +303,8 @@ def _sample_latents_and_indices(
         top_k=top_k,
         top_p=top_p,
         temperature=temperature,
+        progress_conditioning=progress_conditioning,
+        progress_scale=progress_scale,
     )
     return latents, indices[: int(latents.shape[1])], mode
 
@@ -341,6 +364,8 @@ def export_samples(args: argparse.Namespace) -> list[dict[str, object]]:
                 top_k=args.top_k,
                 top_p=args.top_p,
                 temperature=args.temperature,
+                progress_conditioning=args.progress_conditioning,
+                progress_scale=args.progress_scale,
                 device=device,
             )
             with torch.no_grad():
@@ -369,6 +394,8 @@ def export_samples(args: argparse.Namespace) -> list[dict[str, object]]:
                 "top_k": args.top_k,
                 "top_p": args.top_p,
                 "temperature": args.temperature,
+                "progress_conditioning": args.progress_conditioning,
+                "progress_scale": args.progress_scale,
                 "seed": args.seed,
                 "motion_fps": DEFAULT_MOTION_FPS,
                 "control_fps": DEFAULT_CONTROL_FPS,
@@ -429,6 +456,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--progress-conditioning", choices=PROGRESS_CONDITIONING_CHOICES, default="auto")
+    parser.add_argument("--progress-scale", type=float, default=1.0)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--skip-model", action="store_true")

@@ -161,12 +161,15 @@ def synthesize_dataset(
     output_dir: Path,
     allow_forced_transitions: bool = False,
     max_sequence_attempts: int | None = None,
+    drop_overlap_frames: int = 1,
 ) -> dict[str, object]:
     catalog = load_humanml3d_catalog(humanml_root)
     if split not in catalog.split_ids:
         raise ValueError(f"unknown split: {split}")
     if min_clips < 1 or max_clips < min_clips:
         raise ValueError("invalid clip count bounds")
+    if drop_overlap_frames < 0:
+        raise ValueError("drop_overlap_frames must be non-negative")
 
     rng = random.Random(seed)
     split_ids = list(catalog.split_ids[split])
@@ -216,6 +219,7 @@ def synthesize_dataset(
         seed=seed,
         candidate_pool=candidate_pool,
         transition_max_score=transition_max_score,
+        drop_overlap_frames=drop_overlap_frames,
         allow_forced_transitions=allow_forced_transitions,
         max_attempts=max_attempts,
     )
@@ -237,6 +241,7 @@ def synthesize_dataset(
             source_paths: list[str | None] = []
             start_frames: list[int | None] = []
             end_frames: list[int | None] = []
+            dropped_prefix_frames: list[int] = []
             clip_boundaries: list[tuple[int, int]] = []
 
             first_id = rng.choice(ids)
@@ -249,6 +254,7 @@ def synthesize_dataset(
             source_paths.append(str(sample.source_path) if sample.source_path is not None else None)
             start_frames.append(sample.start_frame)
             end_frames.append(sample.end_frame)
+            dropped_prefix_frames.append(0)
             clip_boundaries.append((0, len(first_joints)))
 
             sequence_failed = False
@@ -292,13 +298,32 @@ def synthesize_dataset(
 
                 candidate_joints, candidate_vecs, candidate_caption = _load_clip(catalog, best_id)
                 aligned_joints = align_clip_to_previous(prev, candidate_joints, blend_frames)
+                drop_count = min(int(drop_overlap_frames), max(len(aligned_joints) - 2, 0))
+                aligned_joints_to_store = aligned_joints[drop_count:]
+                candidate_vecs_to_store = candidate_vecs[drop_count:]
+                if len(aligned_joints_to_store) < 2 or len(candidate_vecs_to_store) < 2:
+                    failed_sequences += 1
+                    write_event(
+                        "skip_sequence",
+                        attempt=attempts,
+                        completed=len(rows),
+                        failed_sequences=failed_sequences,
+                        clip_count=clip_count,
+                        current_samples=sample_ids,
+                        candidate_id=best_id,
+                        best_score=float(best_score),
+                        reason="clip too short after dropping overlap frames",
+                        dropped_prefix_frames=drop_count,
+                    )
+                    sequence_failed = True
+                    break
                 start = sum(len(part) for part in merged_joints)
-                end = start + len(aligned_joints)
+                end = start + len(aligned_joints_to_store)
                 forced = best_score > transition_max_score
                 forced_count += int(forced)
 
-                merged_joints.append(aligned_joints)
-                merged_vecs.append(candidate_vecs)
+                merged_joints.append(aligned_joints_to_store)
+                merged_vecs.append(candidate_vecs_to_store)
                 sample_ids.append(best_id)
                 clip_captions.append(candidate_caption)
                 transition_scores.append(float(best_score))
@@ -307,6 +332,7 @@ def synthesize_dataset(
                 source_paths.append(str(sample.source_path) if sample.source_path is not None else None)
                 start_frames.append(sample.start_frame)
                 end_frames.append(sample.end_frame)
+                dropped_prefix_frames.append(drop_count)
                 clip_boundaries.append((start, end))
 
             if sequence_failed:
@@ -330,6 +356,7 @@ def synthesize_dataset(
                 "source_paths": source_paths,
                 "start_frames": start_frames,
                 "end_frames": end_frames,
+                "dropped_prefix_frames": dropped_prefix_frames,
             }
             rows.append(row)
 
@@ -338,6 +365,7 @@ def synthesize_dataset(
             group.create_dataset("joint_vecs_263", data=joint_vecs_263, compression="gzip")
             group.create_dataset("clip_boundaries", data=np.asarray(clip_boundaries, dtype=np.int32))
             group.create_dataset("transition_scores", data=np.asarray(transition_scores, dtype=np.float32))
+            group.create_dataset("dropped_prefix_frames", data=np.asarray(dropped_prefix_frames, dtype=np.int32))
             group.attrs["caption"] = caption
             group.attrs["sample_ids"] = ",".join(sample_ids)
             group.attrs["split"] = split
@@ -383,6 +411,7 @@ def synthesize_dataset(
             "candidate_pool": candidate_pool,
             "transition_max_score": transition_max_score,
             "blend_frames": blend_frames,
+            "drop_overlap_frames": drop_overlap_frames,
             "caption_joiner": caption_joiner,
             "allow_forced_transitions": allow_forced_transitions,
             "max_sequence_attempts": max_sequence_attempts,
@@ -404,6 +433,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--candidate-pool", type=int, default=256)
     parser.add_argument("--transition-max-score", type=float, default=0.35)
     parser.add_argument("--blend-frames", type=int, default=5)
+    parser.add_argument("--drop-overlap-frames", type=int, default=1)
     parser.add_argument("--caption-joiner", default=" then ")
     parser.add_argument("--output-dir", default="stage1_artifacts/long_humanml3d/train")
     parser.add_argument("--allow-forced-transitions", action="store_true")
@@ -420,6 +450,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         candidate_pool=args.candidate_pool,
         transition_max_score=args.transition_max_score,
         blend_frames=args.blend_frames,
+        drop_overlap_frames=args.drop_overlap_frames,
         caption_joiner=args.caption_joiner,
         output_dir=Path(args.output_dir),
         allow_forced_transitions=args.allow_forced_transitions,

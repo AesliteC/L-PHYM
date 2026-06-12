@@ -102,6 +102,42 @@ class Stage1RealTrainTests(unittest.TestCase):
         self.assertLess(metrics["end_loss"], 0.1)
         self.assertGreater(float(loss), metrics["ce_loss"])
 
+    def test_loss_and_metrics_can_ignore_prefix_tokens_with_target_mask(self):
+        from Script.stage1.train_real_text_gpt import compute_loss_and_metrics
+
+        logits = torch.zeros((1, 3, 1, 4), dtype=torch.float32)
+        targets = torch.tensor([[[0], [1], [2]]], dtype=torch.long)
+        logits[0, 0, 0, 3] = 10.0
+        logits[0, 1, 0, 1] = 10.0
+        logits[0, 2, 0, 2] = 10.0
+        target_mask = torch.tensor([[False, True, True]], dtype=torch.bool)
+
+        loss, metrics = compute_loss_and_metrics(logits, targets, target_mask=target_mask)
+
+        self.assertLess(float(loss), 0.01)
+        self.assertEqual(metrics["valid_tokens"], 2)
+        self.assertAlmostEqual(metrics["token_accuracy"], 1.0)
+
+    def test_loss_and_metrics_end_token_uses_first_padding_after_target_region(self):
+        from Script.stage1.train_real_text_gpt import compute_loss_and_metrics
+
+        logits = torch.zeros((1, 4, 1, 514), dtype=torch.float32)
+        targets = torch.tensor([[[7], [8], [513], [513]]], dtype=torch.long)
+        target_mask = torch.tensor([[False, True, False, False]], dtype=torch.bool)
+        logits[0, 2, 0, 512] = 10.0
+
+        loss, metrics = compute_loss_and_metrics(
+            logits,
+            targets,
+            target_mask=target_mask,
+            end_token_weight=0.5,
+        )
+
+        self.assertEqual(metrics["valid_tokens"], 1)
+        self.assertEqual(metrics["end_tokens"], 1)
+        self.assertLess(metrics["end_loss"], 0.1)
+        self.assertGreater(float(loss), 0.0)
+
     def test_real_cache_dataset_loads_expected_fields(self):
         from Script.stage1.train_real_text_gpt import RealStage1CacheDataset
 
@@ -128,6 +164,32 @@ class Stage1RealTrainTests(unittest.TestCase):
             self.assertEqual(item["indices"].shape, (5, 4))
             self.assertEqual(item["text_feature"].shape, (8, 1024))
             self.assertEqual(item["caption"], "walk")
+            self.assertEqual(item["target_mask"].shape, (5,))
+            self.assertEqual(item["end_mask"].shape, (5,))
+            self.assertEqual(int(item["segment_idx"]), 0)
+            self.assertEqual(int(item["num_segments"]), 1)
+            self.assertEqual(float(item["segment_progress"]), 0.0)
+
+    def test_loss_and_metrics_respects_explicit_end_mask(self):
+        from Script.stage1.train_real_text_gpt import compute_loss_and_metrics
+
+        logits = torch.zeros((1, 4, 1, 514), dtype=torch.float32)
+        targets = torch.tensor([[[7], [8], [513], [513]]], dtype=torch.long)
+        target_mask = torch.tensor([[False, True, False, False]], dtype=torch.bool)
+        end_mask = torch.tensor([[False, False, False, True]], dtype=torch.bool)
+        logits[0, 2, 0, 512] = 10.0
+        logits[0, 3, 0, 512] = 10.0
+
+        _, metrics = compute_loss_and_metrics(
+            logits,
+            targets,
+            target_mask=target_mask,
+            end_mask=end_mask,
+            end_token_weight=0.5,
+        )
+
+        self.assertEqual(metrics["end_tokens"], 1)
+        self.assertLess(metrics["end_loss"], 0.1)
 
     def test_prepare_autoregressive_inputs_uses_only_previous_latents(self):
         from Script.stage1.train_real_text_gpt import prepare_autoregressive_inputs
@@ -209,6 +271,28 @@ class Stage1RealTrainTests(unittest.TestCase):
         self.assertTrue(any(param.requires_grad for param in model.trans_base.parameters()))
         self.assertTrue(any(param.requires_grad for param in model.trans_head.parameters()))
         self.assertFalse(any(param.requires_grad for param in model.linear.parameters()))
+
+    def test_configure_trainable_scope_can_train_progress_condition_entry(self):
+        import torch.nn as nn
+
+        from Script.stage1.train_real_text_gpt import configure_trainable_scope
+
+        class FakeModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.trans_temporal = nn.Linear(2, 2)
+                self.trans_base = nn.Linear(2, 2)
+                self.trans_head = nn.Linear(2, 2)
+                self.linear = nn.Linear(2, 2)
+
+        model = FakeModel()
+        count = configure_trainable_scope(model, "temporal_base_head")
+
+        self.assertGreater(count, 0)
+        self.assertTrue(any(param.requires_grad for param in model.trans_temporal.parameters()))
+        self.assertTrue(any(param.requires_grad for param in model.trans_base.parameters()))
+        self.assertTrue(any(param.requires_grad for param in model.trans_head.parameters()))
+        self.assertTrue(any(param.requires_grad for param in model.linear.parameters()))
 
     def test_validate_output_dir_rejects_nonempty_clean_run(self):
         from Script.stage1.train_real_text_gpt import validate_output_dir_for_training

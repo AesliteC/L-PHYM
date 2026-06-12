@@ -14,6 +14,10 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
 import MoConVQCore.Utils.pytorch_utils as ptu
+from Script.stage1.segment_conditioning import (
+    PROGRESS_CONDITIONING_CHOICES,
+    add_progress_to_clip_feature,
+)
 from Script.stage1.train_text_gpt import (
     _load_state_dict_flexible,
     build_text_gpt_model,
@@ -25,16 +29,56 @@ from Script.stage1.train_text_gpt import (
 class RealStage1CacheDataset(Dataset):
     def __init__(self, cache_path: str):
         self.cache = torch.load(cache_path, map_location="cpu")
+        self.length = int(len(self.cache["indices"]))
+        self.has_segment_metadata = all(
+            key in self.cache for key in ("segment_idxs", "num_segments", "segment_progress", "prefix_lengths")
+        )
 
     def __len__(self) -> int:
-        return int(len(self.cache["indices"]))
+        return self.length
 
     def __getitem__(self, idx: int) -> dict[str, object]:
+        window_size = int(self.cache["indices"][idx].shape[0])
+        num_segments_value = self.cache.get("num_segments")
+        segment_idx_value = self.cache.get("segment_idxs")
+        segment_progress_value = self.cache.get("segment_progress")
+        prefix_lengths_value = self.cache.get("prefix_lengths")
+        target_masks_value = self.cache.get("target_masks")
+        end_masks_value = self.cache.get("end_masks")
+        target_mask = (
+            torch.as_tensor(target_masks_value[idx], dtype=torch.bool)
+            if target_masks_value is not None
+            else torch.ones((window_size,), dtype=torch.bool)
+        )
+        end_mask = (
+            torch.as_tensor(end_masks_value[idx], dtype=torch.bool)
+            if end_masks_value is not None
+            else torch.zeros((window_size,), dtype=torch.bool)
+        )
         return {
             "latent": torch.as_tensor(self.cache["latents"][idx], dtype=torch.float32),
             "indices": torch.as_tensor(self.cache["indices"][idx], dtype=torch.long),
             "text_feature": torch.as_tensor(self.cache["text_features"][idx], dtype=torch.float32),
             "text_mask": torch.as_tensor(self.cache["text_masks"][idx], dtype=torch.bool),
+            "target_mask": target_mask,
+            "end_mask": end_mask,
+            "segment_idx": torch.as_tensor(
+                0 if segment_idx_value is None else segment_idx_value[idx],
+                dtype=torch.long,
+            ),
+            "num_segments": torch.as_tensor(
+                1 if num_segments_value is None else num_segments_value[idx],
+                dtype=torch.long,
+            ),
+            "segment_progress": torch.as_tensor(
+                0.0 if segment_progress_value is None else segment_progress_value[idx],
+                dtype=torch.float32,
+            ),
+            "prefix_length": torch.as_tensor(
+                0 if prefix_lengths_value is None else prefix_lengths_value[idx],
+                dtype=torch.long,
+            ),
+            "has_segment_metadata": torch.as_tensor(self.has_segment_metadata, dtype=torch.bool),
             "caption": self.cache["captions"][idx],
             "sequence_id": self.cache["sequence_ids"][idx],
             "window_range": self.cache["window_ranges"][idx],
@@ -64,6 +108,20 @@ def select_rvq_logits_for_targets(logits: torch.Tensor, targets: torch.Tensor) -
     return logits[:, :, :depth, :]
 
 
+def expand_target_mask(target_mask: torch.Tensor | None, targets: torch.Tensor) -> torch.Tensor | None:
+    if target_mask is None:
+        return None
+    target_mask = target_mask.to(device=targets.device, dtype=torch.bool)
+    if target_mask.ndim == targets.ndim - 1:
+        target_mask = target_mask.unsqueeze(-1)
+    if target_mask.shape != targets.shape:
+        try:
+            target_mask = target_mask.expand_as(targets)
+        except RuntimeError as exc:
+            raise ValueError(f"target_mask shape mismatch: {target_mask.shape} vs {targets.shape}") from exc
+    return target_mask
+
+
 def compute_loss_and_metrics(
     rvq_logits: torch.Tensor,
     targets: torch.Tensor,
@@ -74,10 +132,15 @@ def compute_loss_and_metrics(
     kl_temperature: float = 1.0,
     end_token_weight: float = 0.0,
     end_token_id: int = 512,
+    target_mask: torch.Tensor | None = None,
+    end_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, object]]:
     if rvq_logits.shape[:-1] != targets.shape:
         raise ValueError(f"logits/target shape mismatch: {rvq_logits.shape} vs {targets.shape}")
     valid = targets != ignore_index
+    expanded_target_mask = expand_target_mask(target_mask, targets)
+    if expanded_target_mask is not None:
+        valid = valid & expanded_target_mask
     per_token_ce = F.cross_entropy(
         rvq_logits.reshape(-1, rvq_logits.shape[-1]),
         targets.reshape(-1),
@@ -111,7 +174,15 @@ def compute_loss_and_metrics(
     end_tokens = 0
     if end_token_weight > 0.0:
         padding = targets == ignore_index
-        first_padding = padding & ~F.pad(padding[:, :-1, :], (0, 0, 1, 0), value=False)
+        expanded_end_mask = expand_target_mask(end_mask, targets)
+        if expanded_end_mask is not None:
+            first_padding = padding & expanded_end_mask
+        else:
+            first_padding = padding & ~F.pad(padding[:, :-1, :], (0, 0, 1, 0), value=False)
+            if expanded_target_mask is not None:
+                supervised_valid = (targets != ignore_index) & expanded_target_mask
+                follows_supervised = F.pad(supervised_valid[:, :-1, :], (0, 0, 1, 0), value=False)
+                first_padding = padding & follows_supervised
         end_tokens = int(first_padding.sum().item())
         if end_tokens > 0:
             end_targets = torch.full(
@@ -146,15 +217,20 @@ def compute_loss_and_metrics(
 
 
 def configure_trainable_scope(model: torch.nn.Module, train_scope: str) -> int:
-    if train_scope not in {"all", "base_head", "head"}:
+    if train_scope not in {"all", "temporal_base_head", "base_head", "head"}:
         raise ValueError(f"unknown train scope: {train_scope}")
     for param in model.parameters():
         param.requires_grad = train_scope == "all"
-    if train_scope in {"base_head", "head"}:
+    if train_scope in {"temporal_base_head", "base_head", "head"}:
         for param in model.trans_head.parameters():
             param.requires_grad = True
-    if train_scope == "base_head":
+    if train_scope in {"temporal_base_head", "base_head"}:
         for param in model.trans_base.parameters():
+            param.requires_grad = True
+    if train_scope == "temporal_base_head":
+        for param in model.trans_temporal.parameters():
+            param.requires_grad = True
+        for param in model.linear.parameters():
             param.requires_grad = True
     trainable = sum(param.numel() for param in model.parameters() if param.requires_grad)
     if trainable <= 0:
@@ -187,6 +263,9 @@ def _run_epoch(
     kl_weight: float = 0.0,
     kl_temperature: float = 1.0,
     end_token_weight: float = 0.0,
+    progress_conditioning: str = "none",
+    progress_scale: float = 1.0,
+    context_size: int | None = None,
 ) -> dict[str, object]:
     model.train(mode=train)
     if teacher_model is not None:
@@ -207,7 +286,21 @@ def _run_epoch(
         indices = batch["indices"].to(device)
         text_feature = batch["text_feature"].to(device)
         text_mask = batch["text_mask"].to(device)
+        target_mask = batch["target_mask"].to(device)
+        end_mask = batch["end_mask"].to(device)
         clip_feature = torch.zeros((latent.shape[0], 512), dtype=torch.float32, device=device)
+        clip_feature = add_progress_to_clip_feature(
+            clip_feature,
+            mode=progress_conditioning,
+            segment_idx=batch["segment_idx"].to(device),
+            num_segments=batch["num_segments"].to(device),
+            segment_progress=batch["segment_progress"].to(device),
+            prefix_lengths=batch["prefix_length"].to(device),
+            context_size=context_size,
+            scale=progress_scale,
+            has_segment_metadata=bool(torch.as_tensor(batch["has_segment_metadata"]).any().item()),
+            is_segmented=False,
+        )
         gpt_latent = reconstruct_latents_from_rvq_indices(indices, model.embedding)
         context_latent, targets = prepare_autoregressive_inputs(gpt_latent, indices)
 
@@ -227,6 +320,8 @@ def _run_epoch(
                 kl_weight=kl_weight,
                 kl_temperature=kl_temperature,
                 end_token_weight=end_token_weight,
+                target_mask=target_mask,
+                end_mask=end_mask,
             )
             if train:
                 optimizer.zero_grad()
@@ -246,6 +341,9 @@ def _run_epoch(
             depth_correct = [0.0 for _ in depth_acc]
             depth_valid = [0 for _ in depth_acc]
         valid = targets != 513
+        expanded_mask = expand_target_mask(target_mask, targets)
+        if expanded_mask is not None:
+            valid = valid & expanded_mask
         pred = rvq_logits.argmax(dim=-1)
         for depth in range(targets.shape[-1]):
             count = int(valid[..., depth].sum().item())
@@ -345,11 +443,14 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--train-scope", choices=("all", "base_head", "head"), default="all")
+    parser.add_argument("--train-scope", choices=("all", "temporal_base_head", "base_head", "head"), default="all")
     parser.add_argument("--depth-weights", default=None)
     parser.add_argument("--baseline-kl-weight", type=float, default=0.0)
     parser.add_argument("--kl-temperature", type=float, default=1.0)
     parser.add_argument("--end-token-weight", type=float, default=0.0)
+    parser.add_argument("--progress-conditioning", choices=PROGRESS_CONDITIONING_CHOICES, default="auto")
+    parser.add_argument("--progress-scale", type=float, default=1.0)
+    parser.add_argument("--context-size", type=int, default=51)
     parser.add_argument("--append-log", action="store_true")
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args(argv)
@@ -426,6 +527,9 @@ def main(argv: Iterable[str] | None = None) -> None:
                     kl_weight=args.baseline_kl_weight,
                     kl_temperature=args.kl_temperature,
                     end_token_weight=args.end_token_weight,
+                    progress_conditioning=args.progress_conditioning,
+                    progress_scale=args.progress_scale,
+                    context_size=args.context_size,
                 )
                 val_metrics = None
                 if val_loader is not None:
@@ -442,6 +546,9 @@ def main(argv: Iterable[str] | None = None) -> None:
                             kl_weight=args.baseline_kl_weight,
                             kl_temperature=args.kl_temperature,
                             end_token_weight=args.end_token_weight,
+                            progress_conditioning=args.progress_conditioning,
+                            progress_scale=args.progress_scale,
+                            context_size=args.context_size,
                         )
                     if val_metrics["loss"] < best_val_loss:
                         best_val_loss = float(val_metrics["loss"])

@@ -39,6 +39,7 @@ MOCONVQ_BODY_NAMES = (
 DEFAULT_TEXT_GPT_BLOCK_SIZE = 52
 DEFAULT_MOCONVQ_WORLD_JSON = Path(__file__).resolve().parents[2] / "Data/Misc/world.json"
 ROTATION_CALIBRATION_CHOICES = ("none", "rest")
+CACHE_SAMPLE_MODE_CHOICES = ("window", "segment_prefix")
 
 MOCONVQ_PARENT = np.asarray(
     [-1, 0, 1, 0, 0, 3, 4, 5, 6, 7, 8, 2, 2, 2, 12, 13, 14, 15, 16, 17],
@@ -325,6 +326,88 @@ def make_clip_aligned_windows(
     return windows
 
 
+def make_segment_prefix_windows(
+    latents: np.ndarray,
+    indices: np.ndarray,
+    window_size: int,
+    window_stride: int,
+    clip_boundaries: list[tuple[int, int]],
+    prefix_size: int,
+    pad_index: int = 513,
+    include_tail: bool = True,
+) -> list[dict[str, object]]:
+    """Build current-segment targets with previous motion as context.
+
+    Each returned sample contains a motion prefix followed by target tokens from
+    one semantic segment.  The prefix stays in the autoregressive context, but a
+    separate target mask makes the loss ignore prefix tokens.
+    """
+
+    if len(latents) != len(indices):
+        raise ValueError("latent/index length mismatch")
+    if window_size < 1 or window_stride < 1:
+        raise ValueError("window size and stride must be positive")
+    if prefix_size < 0:
+        raise ValueError("prefix_size must be non-negative")
+    if not clip_boundaries:
+        clip_boundaries = [(0, len(latents))]
+
+    samples: list[dict[str, object]] = []
+    prefix_size = min(int(prefix_size), window_size - 1) if window_size > 1 else 0
+    target_capacity_without_prefix = max(window_size - prefix_size, 1)
+    for segment_idx, (clip_start, clip_end) in enumerate(clip_boundaries):
+        if clip_end <= clip_start:
+            continue
+        starts = [clip_start]
+        segment_length = clip_end - clip_start
+        if segment_length > target_capacity_without_prefix:
+            starts = list(range(clip_start, clip_end, window_stride))
+            if include_tail:
+                tail_start = max(clip_start, clip_end - target_capacity_without_prefix)
+                if starts[-1] != tail_start:
+                    starts.append(tail_start)
+            starts = sorted(set(starts))
+        for target_start in starts:
+            target_start = max(clip_start, min(target_start, clip_end))
+            prefix_start = max(0, target_start - prefix_size)
+            prefix_len = target_start - prefix_start
+            target_capacity = window_size - prefix_len
+            if target_capacity <= 0:
+                continue
+            target_end = min(clip_end, target_start + target_capacity)
+            target_valid = target_end - target_start
+            if target_valid <= 0:
+                continue
+            source_start = prefix_start
+            source_end = target_end
+            valid = source_end - source_start
+            latent_window = np.zeros((window_size, latents.shape[-1]), dtype=np.float32)
+            index_window = np.full((window_size, indices.shape[-1]), pad_index, dtype=np.int64)
+            target_mask = np.zeros((window_size,), dtype=bool)
+            end_mask = np.zeros((window_size,), dtype=bool)
+            latent_window[:valid] = latents[source_start:source_end]
+            index_window[:valid] = indices[source_start:source_end]
+            target_mask[prefix_len : prefix_len + target_valid] = True
+            if target_end >= clip_end and prefix_len + target_valid < window_size:
+                end_mask[prefix_len + target_valid] = True
+            samples.append(
+                {
+                    "latent": latent_window,
+                    "indices": index_window,
+                    "target_mask": target_mask,
+                    "end_mask": end_mask,
+                    "window_range": (source_start, source_end),
+                    "target_range": (target_start, target_end),
+                    "prefix_range": (prefix_start, target_start),
+                    "segment_idx": int(segment_idx),
+                    "num_segments": int(len(clip_boundaries)),
+                    "segment_range": (clip_start, clip_end),
+                    "prefix_length": int(prefix_len),
+                }
+            )
+    return samples
+
+
 def build_t5_text_encoder(
     model_name: str,
     device: str,
@@ -451,6 +534,8 @@ def build_cache_from_long_h5(
     caption_mode: str = "window",
     caption_joiner: str = " then ",
     window_policy: str = "clip",
+    sample_mode: str = "window",
+    prefix_size: int = 25,
     forced_transition_margin: int = 0,
     text_model: str | None = None,
     max_text_length: int | None = None,
@@ -461,6 +546,8 @@ def build_cache_from_long_h5(
         raise ValueError(f"unknown caption_mode: {caption_mode}")
     if window_policy not in {"sequence", "clip"}:
         raise ValueError(f"unknown window_policy: {window_policy}")
+    if sample_mode not in CACHE_SAMPLE_MODE_CHOICES:
+        raise ValueError(f"unknown sample_mode: {sample_mode}")
     max_motion_tokens = DEFAULT_TEXT_GPT_BLOCK_SIZE - 1
     if window_size > max_motion_tokens:
         raise ValueError(
@@ -475,6 +562,15 @@ def build_cache_from_long_h5(
     captions = []
     sequence_ids = []
     window_ranges = []
+    target_ranges = []
+    prefix_ranges = []
+    segment_ranges = []
+    target_masks = []
+    end_masks = []
+    segment_idxs = []
+    num_segments_all = []
+    segment_progresses = []
+    prefix_lengths = []
     sample_ids_all = []
     failures: list[dict[str, str]] = []
     encoded_text_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -507,23 +603,66 @@ def build_cache_from_long_h5(
                     forced_transitions=list(row.get("transition_forced", [])),
                     margin=forced_transition_margin,
                 )
-                if window_policy == "clip" and latent_clip_boundaries:
-                    windows = make_clip_aligned_windows(
+                if sample_mode == "segment_prefix" and latent_clip_boundaries:
+                    sample_windows = make_segment_prefix_windows(
                         latent,
                         index,
                         window_size=window_size,
                         window_stride=window_stride,
                         clip_boundaries=latent_clip_boundaries,
+                        prefix_size=prefix_size,
                         include_tail=not forced_boundaries_trimmed,
                     )
                 else:
-                    windows = make_windows(
-                        latent,
-                        index,
-                        window_size=window_size,
-                        window_stride=window_stride,
-                    )
-                for latent_window, index_window, window_range in windows:
+                    if window_policy == "clip" and latent_clip_boundaries:
+                        windows = make_clip_aligned_windows(
+                            latent,
+                            index,
+                            window_size=window_size,
+                            window_stride=window_stride,
+                            clip_boundaries=latent_clip_boundaries,
+                            include_tail=not forced_boundaries_trimmed,
+                        )
+                    else:
+                        windows = make_windows(
+                            latent,
+                            index,
+                            window_size=window_size,
+                            window_stride=window_stride,
+                        )
+                    sample_windows = [
+                        {
+                            "latent": latent_window,
+                            "indices": index_window,
+                            "target_mask": index_window[:, 0] != 513,
+                            "end_mask": np.concatenate(
+                                [
+                                    np.asarray([False] * int(np.sum(index_window[:, 0] != 513)), dtype=bool),
+                                    np.asarray([True], dtype=bool)
+                                    if int(np.sum(index_window[:, 0] != 513)) < window_size
+                                    else np.asarray([], dtype=bool),
+                                    np.asarray(
+                                        [False]
+                                        * max(window_size - int(np.sum(index_window[:, 0] != 513)) - 1, 0),
+                                        dtype=bool,
+                                    ),
+                                ]
+                            ),
+                            "window_range": window_range,
+                            "target_range": window_range,
+                            "prefix_range": (window_range[0], window_range[0]),
+                            "segment_idx": 0,
+                            "num_segments": max(len(latent_clip_boundaries), 1),
+                            "segment_range": window_range,
+                            "prefix_length": 0,
+                        }
+                        for latent_window, index_window, window_range in windows
+                    ]
+
+                for sample_window in sample_windows:
+                    latent_window = sample_window["latent"]
+                    index_window = sample_window["indices"]
+                    window_range = sample_window["target_range"] if sample_mode == "segment_prefix" else sample_window["window_range"]
                     window_caption = caption
                     if caption_mode == "window":
                         window_caption = select_window_caption(
@@ -540,11 +679,22 @@ def build_cache_from_long_h5(
                     text_feature, text_mask = encoded_text_cache[window_caption]
                     latents_all.append(latent_window)
                     indices_all.append(index_window)
+                    target_masks.append(np.asarray(sample_window["target_mask"], dtype=bool))
+                    end_masks.append(np.asarray(sample_window["end_mask"], dtype=bool))
                     text_features_all.append(text_feature[0])
                     text_masks_all.append(text_mask[0])
                     captions.append(window_caption)
                     sequence_ids.append(sequence_id)
-                    window_ranges.append(window_range)
+                    window_ranges.append(tuple(sample_window["window_range"]))
+                    target_ranges.append(tuple(sample_window["target_range"]))
+                    prefix_ranges.append(tuple(sample_window["prefix_range"]))
+                    segment_ranges.append(tuple(sample_window["segment_range"]))
+                    segment_idx = int(sample_window["segment_idx"])
+                    num_segments = int(sample_window["num_segments"])
+                    segment_idxs.append(segment_idx)
+                    num_segments_all.append(num_segments)
+                    segment_progresses.append(float(segment_idx / max(num_segments - 1, 1)) if num_segments > 1 else 0.0)
+                    prefix_lengths.append(int(sample_window["prefix_length"]))
                     sample_ids_all.append(list(sample_ids))
             except Exception as exc:  # noqa: BLE001 - failure log needs to preserve all conversion errors.
                 failures.append(
@@ -560,9 +710,18 @@ def build_cache_from_long_h5(
         "indices": torch.from_numpy(np.stack(indices_all, axis=0)) if indices_all else torch.empty((0, window_size, rvq_depth), dtype=torch.long),
         "text_features": torch.from_numpy(np.stack(text_features_all, axis=0)) if text_features_all else torch.empty((0, 0, 1024)),
         "text_masks": torch.from_numpy(np.stack(text_masks_all, axis=0)) if text_masks_all else torch.empty((0, 0), dtype=torch.bool),
+        "target_masks": torch.from_numpy(np.stack(target_masks, axis=0)) if target_masks else torch.empty((0, window_size), dtype=torch.bool),
+        "end_masks": torch.from_numpy(np.stack(end_masks, axis=0)) if end_masks else torch.empty((0, window_size), dtype=torch.bool),
         "captions": captions,
         "sequence_ids": sequence_ids,
         "window_ranges": window_ranges,
+        "target_ranges": target_ranges,
+        "prefix_ranges": prefix_ranges,
+        "segment_ranges": segment_ranges,
+        "segment_idxs": torch.as_tensor(segment_idxs, dtype=torch.long),
+        "num_segments": torch.as_tensor(num_segments_all, dtype=torch.long),
+        "segment_progress": torch.as_tensor(segment_progresses, dtype=torch.float32),
+        "prefix_lengths": torch.as_tensor(prefix_lengths, dtype=torch.long),
         "sample_ids": sample_ids_all,
         "config": {
             "long_h5": str(long_h5_path),
@@ -574,6 +733,8 @@ def build_cache_from_long_h5(
             "caption_mode": caption_mode,
             "caption_joiner": caption_joiner,
             "window_policy": window_policy,
+            "sample_mode": sample_mode,
+            "prefix_size": prefix_size,
             "forced_transition_margin": forced_transition_margin,
             "text_model": text_model,
             "max_text_length": max_text_length,
@@ -632,6 +793,8 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--caption-mode", choices=("sequence", "window"), default="window")
     parser.add_argument("--caption-joiner", default=" then ")
     parser.add_argument("--window-policy", choices=("sequence", "clip"), default="clip")
+    parser.add_argument("--sample-mode", choices=CACHE_SAMPLE_MODE_CHOICES, default="window")
+    parser.add_argument("--prefix-size", type=int, default=25)
     parser.add_argument("--forced-transition-margin", type=int, default=0)
     parser.add_argument("--rotation-calibration", choices=ROTATION_CALIBRATION_CHOICES, default="rest")
     parser.add_argument("--world-json", default=str(DEFAULT_MOCONVQ_WORLD_JSON))
@@ -655,6 +818,8 @@ def main(argv: Iterable[str] | None = None) -> None:
         caption_mode=args.caption_mode,
         caption_joiner=args.caption_joiner,
         window_policy=args.window_policy,
+        sample_mode=args.sample_mode,
+        prefix_size=args.prefix_size,
         forced_transition_margin=args.forced_transition_margin,
         text_model=args.text_model,
         max_text_length=args.max_text_length,
@@ -689,6 +854,8 @@ def main(argv: Iterable[str] | None = None) -> None:
                 "index_max": idx_max,
                 "caption_mode": cache["config"]["caption_mode"],
                 "window_policy": cache["config"]["window_policy"],
+                "sample_mode": cache["config"]["sample_mode"],
+                "prefix_size": cache["config"]["prefix_size"],
                 "forced_transition_margin": cache["config"]["forced_transition_margin"],
             },
             indent=2,

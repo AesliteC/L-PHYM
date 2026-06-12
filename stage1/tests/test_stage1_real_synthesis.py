@@ -136,6 +136,7 @@ class Stage1RealSynthesisTests(unittest.TestCase):
                 self.assertEqual(group["joints_22"].shape[1:], (22, 3))
                 self.assertEqual(group["joint_vecs_263"].shape[1], 263)
                 self.assertEqual(group["clip_boundaries"].shape, (2, 2))
+                self.assertEqual(group["dropped_prefix_frames"].shape, (2,))
                 self.assertEqual(group.attrs["split"], "train")
 
             loaded_summary = json.loads((out / "summary.json").read_text())
@@ -159,6 +160,46 @@ class Stage1RealSynthesisTests(unittest.TestCase):
             self.assertIn("start", progress_events)
             self.assertIn("sequence_written", progress_events)
             self.assertIn("summary", progress_events)
+
+    def test_diagnose_long_humanml3d_quality_reports_boundary_stats(self):
+        from Script.stage1.diagnose_long_humanml3d_quality import diagnose_long_humanml3d_quality
+        from Script.stage1.synthesize_long_humanml3d import synthesize_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            root = _write_mixed_transition_humanml_fixture(tmp)
+            out = tmp / "out"
+            synthesize_dataset(
+                humanml_root=root,
+                split="train",
+                num_sequences=2,
+                min_clips=2,
+                max_clips=2,
+                seed=123,
+                candidate_pool=2,
+                transition_max_score=0.35,
+                blend_frames=2,
+                caption_joiner=" then ",
+                output_dir=out,
+                allow_forced_transitions=True,
+            )
+
+            summary = diagnose_long_humanml3d_quality(
+                long_h5_path=out / "long_sequences.h5",
+                manifest_path=out / "manifest.jsonl",
+                output_json=tmp / "quality.json",
+                transition_jsonl=tmp / "transitions.jsonl",
+                root_gap_warn=0.0,
+                root_velocity_warn=0.0,
+                yaw_warn_rad=0.0,
+                foot_velocity_warn=0.0,
+            )
+
+            self.assertEqual(summary["sequences"], 2)
+            self.assertEqual(summary["transitions"], 2)
+            self.assertGreaterEqual(summary["bad_transition_count"], 0)
+            self.assertTrue((tmp / "quality.json").exists())
+            self.assertTrue((tmp / "transitions.jsonl").exists())
 
     def test_synthesize_dataset_filters_clips_with_invalid_joint_shape(self):
         from Script.stage1.synthesize_long_humanml3d import synthesize_dataset

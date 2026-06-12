@@ -142,6 +142,7 @@ class Stage1RealGenerateTests(unittest.TestCase):
             top_k=50,
             top_p=1.0,
             temperature=1.0,
+            **kwargs,
         ):
             segment_value = bert_feature[0, 0, 0]
             if clip_feature is None:
@@ -312,6 +313,91 @@ class Stage1RealGenerateTests(unittest.TestCase):
         self.assertTrue(torch.equal(latents[:, :2, :], torch.ones((1, 2, 768))))
         self.assertTrue(torch.equal(latents[:, 2:5, :], torch.full((1, 3, 768), 2.0)))
         self.assertTrue(torch.equal(latents[:, 5:, :], torch.full((1, 4, 768), 3.0)))
+
+    def test_segmented_generation_continues_after_segment_early_stop(self):
+        import torch
+
+        import Script.stage1.generate_long_motion as generate
+
+        class FakeModel:
+            def get_block_size(self):
+                return 8
+
+        calls = []
+
+        def fake_text_encoder(text, model_name, max_length, device):
+            calls.append(text)
+            return torch.full((1, max_length, 1024), float(len(calls))), torch.zeros((1, max_length), dtype=torch.bool)
+
+        def fake_with_prefix(
+            model,
+            clip_feature,
+            bert_feature,
+            bert_mask,
+            max_length,
+            prefix_latents,
+            context_size,
+            chunk_size,
+            categorical,
+            allow_early_stop,
+            top_k=50,
+            top_p=1.0,
+            temperature=1.0,
+            **kwargs,
+        ):
+            value = float(bert_feature[0, 0, 0])
+            out_len = 1 if len(calls) == 1 else max_length
+            return torch.full((1, out_len, 768), value)
+
+        old_encode = generate.encode_text_with_t5
+        old_with_prefix = generate.sample_latents_with_prefix
+        generate.encode_text_with_t5 = fake_text_encoder
+        generate.sample_latents_with_prefix = fake_with_prefix
+        try:
+            latents = generate.sample_latents_segmented(
+                model=FakeModel(),
+                clip_feature=torch.zeros((1, 512)),
+                text_segments=["walk", "turn"],
+                text_encoder="t5",
+                text_model="fake-t5",
+                max_text_length=4,
+                device="cpu",
+                segment_length=3,
+                segment_lengths=[3, 2],
+                context_size=2,
+                chunk_size=2,
+                categorical=False,
+                allow_early_stop=True,
+            )
+        finally:
+            generate.encode_text_with_t5 = old_encode
+            generate.sample_latents_with_prefix = old_with_prefix
+
+        self.assertEqual(calls, ["walk", "turn"])
+        self.assertEqual(latents.shape, (1, 3, 768))
+        self.assertTrue(torch.equal(latents[:, :1, :], torch.ones((1, 1, 768))))
+        self.assertTrue(torch.equal(latents[:, 1:, :], torch.full((1, 2, 768), 2.0)))
+
+    def test_segment_progress_conditioning_changes_clip_feature(self):
+        import torch
+
+        from Script.stage1.segment_conditioning import add_progress_to_clip_feature
+
+        clip_feature = torch.zeros((2, 512), dtype=torch.float32)
+        conditioned = add_progress_to_clip_feature(
+            clip_feature,
+            mode="scalar",
+            segment_idx=torch.tensor([0, 2]),
+            num_segments=torch.tensor([3, 3]),
+            segment_progress=torch.tensor([0.0, 1.0]),
+            prefix_lengths=torch.tensor([0, 5]),
+            context_size=10,
+        )
+
+        self.assertEqual(conditioned.shape, (2, 512))
+        self.assertGreater(float(conditioned.abs().sum()), 0.0)
+        self.assertAlmostEqual(float(conditioned[0, 0]), 0.0)
+        self.assertAlmostEqual(float(conditioned[1, 0]), 1.0)
 
     def test_auto_generation_mode_selects_segmented_for_joined_text(self):
         from Script.stage1.generate_long_motion import resolve_generation_mode

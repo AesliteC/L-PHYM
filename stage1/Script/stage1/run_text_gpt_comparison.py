@@ -99,6 +99,8 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--progress-conditioning", choices=("none", "scalar", "auto"), default="auto")
+    parser.add_argument("--progress-scale", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--bvh-dir", default="")
@@ -166,6 +168,10 @@ def main(argv: Iterable[str] | None = None) -> None:
                     str(args.top_p),
                     "--temperature",
                     str(args.temperature),
+                    "--progress-conditioning",
+                    args.progress_conditioning,
+                    "--progress-scale",
+                    str(args.progress_scale),
                     "--gpu",
                     str(args.gpu),
                     "--seed",
@@ -239,6 +245,8 @@ def main(argv: Iterable[str] | None = None) -> None:
             "top_p": args.top_p,
             "top_k": args.top_k,
             "temperature": args.temperature,
+            "progress_conditioning": args.progress_conditioning,
+            "progress_scale": args.progress_scale,
             "seed": args.seed,
             "max_length": args.max_length,
             "generation_mode": args.generation_mode,

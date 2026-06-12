@@ -382,6 +382,87 @@ class Stage1RealCacheTests(unittest.TestCase):
             self.assertEqual(cache["window_ranges"], [(0, 5), (8, 13)])
             self.assertEqual(cache["captions"], ["walk", "kick"])
 
+    def test_build_cache_can_make_segment_prefix_samples(self):
+        from Script.stage1.real_moconvq_cache import build_cache_from_long_h5
+
+        class WindowAgent:
+            def encode_seq_all(self, obs, target):
+                latent = torch.arange(1 * 12 * 768, dtype=torch.float32).reshape(1, 12, 768)
+                indices = torch.arange(12 * 8, dtype=torch.long).reshape(8, 1, 12) % 512
+                return {"latent_vq": latent, "indexs": indices}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            long_h5 = tmp / "long.h5"
+            manifest = tmp / "manifest.jsonl"
+            with h5py.File(long_h5, "w") as h5:
+                group = h5.create_group("seq_000")
+                group.create_dataset("joints_22", data=_toy_joints(length=48))
+                group.create_dataset("clip_boundaries", data=np.asarray([[0, 24], [24, 48]], dtype=np.int32))
+                group.attrs["caption"] = "walk then kick"
+                group.attrs["sample_ids"] = "000001,000002"
+            manifest.write_text(
+                (
+                    '{"sequence_id":"seq_000","caption":"walk then kick",'
+                    '"clip_captions":["walk","kick"],'
+                    '"clip_boundaries":[[0,24],[24,48]],'
+                    '"sample_ids":["000001","000002"]}\n'
+                ),
+                encoding="utf-8",
+            )
+
+            def fake_text_encoder(captions):
+                return (
+                    np.ones((len(captions), 8, 1024), dtype=np.float32),
+                    np.zeros((len(captions), 8), dtype=bool),
+                )
+
+            cache, failures = build_cache_from_long_h5(
+                long_h5_path=long_h5,
+                manifest_path=manifest,
+                agent=WindowAgent(),
+                text_encoder=fake_text_encoder,
+                window_size=5,
+                window_stride=3,
+                rvq_depth=4,
+                fps=20,
+                sample_mode="segment_prefix",
+                prefix_size=2,
+            )
+
+            self.assertEqual(failures, [])
+            self.assertEqual(cache["config"]["sample_mode"], "segment_prefix")
+            self.assertEqual(cache["captions"][:3], ["walk", "walk", "kick"])
+            self.assertEqual(cache["prefix_ranges"][0], (0, 0))
+            self.assertEqual(cache["prefix_ranges"][2], (4, 6))
+            self.assertEqual(cache["target_ranges"][2], (6, 9))
+            self.assertEqual(cache["segment_idxs"].tolist()[:3], [0, 0, 1])
+            self.assertEqual(cache["num_segments"].tolist()[:3], [2, 2, 2])
+            self.assertAlmostEqual(float(cache["segment_progress"][2]), 1.0)
+            self.assertEqual(cache["target_masks"].shape, (4, 5))
+            self.assertEqual(cache["end_masks"].shape, (4, 5))
+            self.assertTrue(torch.equal(cache["target_masks"][2], torch.tensor([False, False, True, True, True])))
+            self.assertFalse(bool(cache["end_masks"][2].any()))
+            self.assertFalse(bool(cache["end_masks"][3].any()))
+
+    def test_segment_prefix_windows_mark_end_only_when_padding_slot_exists(self):
+        from Script.stage1.real_moconvq_cache import make_segment_prefix_windows
+
+        latents = np.zeros((11, 2), dtype=np.float32)
+        indices = np.zeros((11, 1), dtype=np.int64)
+
+        windows = make_segment_prefix_windows(
+            latents=latents,
+            indices=indices,
+            window_size=5,
+            window_stride=3,
+            clip_boundaries=[(0, 6), (6, 11)],
+            prefix_size=2,
+        )
+
+        self.assertFalse(bool(windows[1]["end_mask"].any()))
+        self.assertTrue(any(bool(window["end_mask"].any()) for window in windows))
+
     def test_cache_main_records_text_encoder_configuration(self):
         from Script.stage1 import real_moconvq_cache
 

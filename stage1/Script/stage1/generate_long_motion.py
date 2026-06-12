@@ -6,6 +6,10 @@ from pathlib import Path
 import torch
 
 import MoConVQCore.Utils.pytorch_utils as ptu
+from Script.stage1.segment_conditioning import (
+    PROGRESS_CONDITIONING_CHOICES,
+    add_progress_to_clip_feature,
+)
 from Script.stage1.train_text_gpt import build_text_gpt_model, gpt_config
 
 
@@ -51,6 +55,8 @@ def sample_latents_rolling(
     top_k: int = 0,
     top_p: float = 0.95,
     temperature: float = 1.0,
+    progress_conditioning: str = "none",
+    progress_scale: float = 1.0,
 ) -> torch.Tensor:
     """Generate arbitrary-length latent sequences using fixed-size GPT contexts."""
     if max_length < 1:
@@ -250,6 +256,8 @@ def sample_latents_segmented(
     top_k: int = 0,
     top_p: float = 0.95,
     temperature: float = 1.0,
+    progress_conditioning: str = "auto",
+    progress_scale: float = 1.0,
 ) -> torch.Tensor:
     if not text_segments:
         raise ValueError("text_segments must not be empty")
@@ -258,6 +266,7 @@ def sample_latents_segmented(
     if segment_lengths is not None and len(segment_lengths) != len(text_segments):
         raise ValueError(f"expected {len(text_segments)} segment lengths, got {len(segment_lengths)}")
     generated: torch.Tensor | None = None
+    total_segments = len(text_segments)
     for segment_idx, segment in enumerate(text_segments):
         current_segment_length = segment_lengths[segment_idx] if segment_lengths is not None else segment_length
         if text_encoder == "t5":
@@ -271,10 +280,22 @@ def sample_latents_segmented(
             bert_feature, bert_mask = encode_text_with_hash(segment, device=device)
         else:
             raise ValueError(f"unknown text encoder: {text_encoder}")
+        segment_clip_feature = add_progress_to_clip_feature(
+            clip_feature,
+            mode=progress_conditioning,
+            segment_idx=segment_idx,
+            num_segments=total_segments,
+            segment_progress=float(segment_idx / max(total_segments - 1, 1)) if total_segments > 1 else 0.0,
+            prefix_lengths=0 if generated is None else min(int(generated.shape[1]), int(context_size or model.get_block_size() - 1)),
+            context_size=context_size,
+            scale=progress_scale,
+            has_segment_metadata=True,
+            is_segmented=True,
+        )
 
         segment_latents = sample_latents_with_prefix(
             model=model,
-            clip_feature=clip_feature,
+            clip_feature=segment_clip_feature,
             bert_feature=bert_feature,
             bert_mask=bert_mask,
             max_length=current_segment_length,
@@ -288,8 +309,6 @@ def sample_latents_segmented(
             temperature=temperature,
         )
         generated = segment_latents if generated is None else torch.cat([generated, segment_latents], dim=1)
-        if segment_latents.shape[1] < current_segment_length and allow_early_stop:
-            break
     if generated is None:
         raise RuntimeError("segmented generation produced no latents")
     return generated
@@ -316,6 +335,8 @@ def main():
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--progress-conditioning", choices=PROGRESS_CONDITIONING_CHOICES, default="auto")
+    parser.add_argument("--progress-scale", type=float, default=1.0)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -365,6 +386,8 @@ def main():
             top_k=args.top_k,
             top_p=args.top_p,
             temperature=args.temperature,
+            progress_conditioning=args.progress_conditioning,
+            progress_scale=args.progress_scale,
         )
     else:
         segments = split_text_segments(args.text, joiner=args.segment_joiner)
@@ -391,6 +414,8 @@ def main():
             top_k=args.top_k,
             top_p=args.top_p,
             temperature=args.temperature,
+            progress_conditioning=args.progress_conditioning,
+            progress_scale=args.progress_scale,
         )
     dconv = agent.posterior.decoder.decode_dynamic(cur_embedding)
 
