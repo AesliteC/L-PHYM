@@ -318,6 +318,59 @@ class Stage1RealTrainTests(unittest.TestCase):
                         pass
             self.assertFalse((output_dir / ".train.lock").exists())
 
+    def test_teacher_kl_uses_progress_free_condition_by_default(self):
+        import torch.nn as nn
+        from torch.utils.data import DataLoader
+
+        from Script.stage1.train_real_text_gpt import _run_epoch
+
+        class RecordingModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embedding = [torch.zeros((514, 768), dtype=torch.float32)]
+                self.seen_clip_features = []
+
+            def forward(self, latents, idxs, clip_feature, text_feature, text_mask):
+                self.seen_clip_features.append(clip_feature.detach().cpu().clone())
+                logits = torch.zeros((*idxs.shape, 514), dtype=torch.float32, device=idxs.device)
+                logits[..., 0] = 10.0
+                return logits, latents
+
+        sample = {
+            "latent": torch.zeros((3, 768), dtype=torch.float32),
+            "indices": torch.zeros((3, 1), dtype=torch.long),
+            "text_feature": torch.zeros((8, 1024), dtype=torch.float32),
+            "text_mask": torch.zeros((8,), dtype=torch.bool),
+            "target_mask": torch.ones((3,), dtype=torch.bool),
+            "end_mask": torch.zeros((3,), dtype=torch.bool),
+            "segment_idx": torch.tensor(1, dtype=torch.long),
+            "num_segments": torch.tensor(3, dtype=torch.long),
+            "segment_progress": torch.tensor(0.5, dtype=torch.float32),
+            "prefix_length": torch.tensor(2, dtype=torch.long),
+            "has_segment_metadata": torch.tensor(True, dtype=torch.bool),
+        }
+        student = RecordingModel()
+        teacher = RecordingModel()
+
+        metrics = _run_epoch(
+            student,
+            DataLoader([sample], batch_size=1),
+            optimizer=None,
+            device=torch.device("cpu"),
+            train=False,
+            teacher_model=teacher,
+            kl_weight=0.1,
+            progress_conditioning="scalar",
+            teacher_progress_conditioning="none",
+            context_size=10,
+        )
+
+        self.assertGreater(metrics["valid_tokens"], 0)
+        self.assertEqual(len(student.seen_clip_features), 1)
+        self.assertEqual(len(teacher.seen_clip_features), 1)
+        self.assertGreater(float(student.seen_clip_features[0].abs().sum()), 0.0)
+        self.assertEqual(float(teacher.seen_clip_features[0].abs().sum()), 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

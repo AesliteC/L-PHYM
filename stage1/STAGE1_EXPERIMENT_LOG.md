@@ -896,3 +896,72 @@ python Script/stage1/train_real_text_gpt.py \
 
 Only after this new run should baseline-vs-finetuned top-p BVH/MP4 comparisons
 be treated as the current Stage1 result.
+
+## 2026-06-12: Loss/protocol guard before segment-progress retraining
+
+### Purpose
+
+Before launching the next long run, the Stage1 loss and comparison protocol were
+checked again.  One issue was found in the KL distillation path: when progress
+conditioning was enabled, the baseline teacher received the same progress
+feature as the student.  The teacher checkpoint was never trained with this
+extra condition vector, so this made the KL term constrain the student toward a
+baseline distribution under an out-of-distribution condition.  That is not the
+intended role of the KL term.
+
+The intended setup is:
+
+- student: receives segment-progress conditioning and learns the new long-prompt
+  control signal;
+- teacher/baseline KL: receives the original zero `clip_feature`, so it only
+  regularizes toward the pretrained text-to-motion prior;
+- baseline comparison: uses the same top-p sampling settings, but no segment
+  progress feature unless explicitly requested.
+
+### Code changes
+
+- `train_real_text_gpt.py`
+  - Added `--teacher-progress-conditioning`, defaulting to `none`.
+  - The student still uses `--progress-conditioning auto` for segment-progress
+    training.
+  - The teacher used by `--baseline-kl-weight` now defaults to progress-free
+    conditioning.
+- `run_text_gpt_comparison.py`
+  - Added `--baseline-progress-conditioning`, defaulting to `none`.
+  - The finetuned model keeps `--progress-conditioning auto`.
+- `export_baseline_intermediate.py`
+  - Changed the default progress conditioning to `none`, matching the baseline
+    checkpoint's original condition distribution.
+- Added a regression test proving that, with KL enabled, the student receives a
+  nonzero progress feature while the teacher receives a zero feature by default.
+
+### Verification
+
+Commands run:
+
+```bash
+source /home/chenjie/miniconda3/etc/profile.d/conda.sh
+conda activate moconvq
+cd /home/chenjie/cc/robotics/MoConVQ
+
+python -m py_compile \
+  Script/stage1/train_real_text_gpt.py \
+  Script/stage1/run_text_gpt_comparison.py \
+  tests/test_stage1_real_train.py
+
+python -m unittest \
+  tests.test_stage1_real_train \
+  tests.test_stage1_text_gpt_comparison \
+  -v
+```
+
+Result:
+
+- `py_compile`: passed.
+- Relevant tests: 18 tests passed.
+
+### Status
+
+This is still a code-level fix, not a model-quality result.  The next step is to
+rebuild the segment-prefix cache and retrain with the corrected KL/comparison
+protocol.

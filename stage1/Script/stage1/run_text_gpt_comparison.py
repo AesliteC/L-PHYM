@@ -100,6 +100,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--progress-conditioning", choices=("none", "scalar", "auto"), default="auto")
+    parser.add_argument("--baseline-progress-conditioning", choices=("none", "scalar", "auto"), default="none")
     parser.add_argument("--progress-scale", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--gpu", type=int, default=0)
@@ -134,6 +135,9 @@ def main(argv: Iterable[str] | None = None) -> None:
             ("baseline_top_p", args.baseline_checkpoint),
             ("finetuned_top_p", args.finetuned_checkpoint),
         ):
+            progress_conditioning = (
+                args.baseline_progress_conditioning if model_name.startswith("baseline") else args.progress_conditioning
+            )
             bvh_path = bvh_dir / f"{prompt_name}__{model_name}.bvh"
             log_path = bvh_dir / f"{prompt_name}__{model_name}.log"
             if not args.skip_generation:
@@ -169,7 +173,7 @@ def main(argv: Iterable[str] | None = None) -> None:
                     "--temperature",
                     str(args.temperature),
                     "--progress-conditioning",
-                    args.progress_conditioning,
+                    progress_conditioning,
                     "--progress-scale",
                     str(args.progress_scale),
                     "--gpu",
@@ -246,6 +250,7 @@ def main(argv: Iterable[str] | None = None) -> None:
             "top_k": args.top_k,
             "temperature": args.temperature,
             "progress_conditioning": args.progress_conditioning,
+            "baseline_progress_conditioning": args.baseline_progress_conditioning,
             "progress_scale": args.progress_scale,
             "seed": args.seed,
             "max_length": args.max_length,

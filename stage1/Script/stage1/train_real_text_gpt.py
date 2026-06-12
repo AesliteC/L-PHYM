@@ -266,6 +266,7 @@ def _run_epoch(
     progress_conditioning: str = "none",
     progress_scale: float = 1.0,
     context_size: int | None = None,
+    teacher_progress_conditioning: str = "none",
 ) -> dict[str, object]:
     model.train(mode=train)
     if teacher_model is not None:
@@ -288,9 +289,9 @@ def _run_epoch(
         text_mask = batch["text_mask"].to(device)
         target_mask = batch["target_mask"].to(device)
         end_mask = batch["end_mask"].to(device)
-        clip_feature = torch.zeros((latent.shape[0], 512), dtype=torch.float32, device=device)
+        base_clip_feature = torch.zeros((latent.shape[0], 512), dtype=torch.float32, device=device)
         clip_feature = add_progress_to_clip_feature(
-            clip_feature,
+            base_clip_feature,
             mode=progress_conditioning,
             segment_idx=batch["segment_idx"].to(device),
             num_segments=batch["num_segments"].to(device),
@@ -301,6 +302,20 @@ def _run_epoch(
             has_segment_metadata=bool(torch.as_tensor(batch["has_segment_metadata"]).any().item()),
             is_segmented=False,
         )
+        teacher_clip_feature = base_clip_feature
+        if teacher_progress_conditioning != "none":
+            teacher_clip_feature = add_progress_to_clip_feature(
+                base_clip_feature,
+                mode=teacher_progress_conditioning,
+                segment_idx=batch["segment_idx"].to(device),
+                num_segments=batch["num_segments"].to(device),
+                segment_progress=batch["segment_progress"].to(device),
+                prefix_lengths=batch["prefix_length"].to(device),
+                context_size=context_size,
+                scale=progress_scale,
+                has_segment_metadata=bool(torch.as_tensor(batch["has_segment_metadata"]).any().item()),
+                is_segmented=False,
+            )
         gpt_latent = reconstruct_latents_from_rvq_indices(indices, model.embedding)
         context_latent, targets = prepare_autoregressive_inputs(gpt_latent, indices)
 
@@ -310,7 +325,13 @@ def _run_epoch(
             teacher_rvq_logits = None
             if teacher_model is not None and kl_weight > 0.0:
                 with torch.no_grad():
-                    teacher_logits, _ = teacher_model(context_latent, targets, clip_feature, text_feature, text_mask)
+                    teacher_logits, _ = teacher_model(
+                        context_latent,
+                        targets,
+                        teacher_clip_feature,
+                        text_feature,
+                        text_mask,
+                    )
                     teacher_rvq_logits = select_rvq_logits_for_targets(teacher_logits, targets)
             loss, metrics = compute_loss_and_metrics(
                 rvq_logits,
@@ -450,6 +471,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--end-token-weight", type=float, default=0.0)
     parser.add_argument("--progress-conditioning", choices=PROGRESS_CONDITIONING_CHOICES, default="auto")
     parser.add_argument("--progress-scale", type=float, default=1.0)
+    parser.add_argument("--teacher-progress-conditioning", choices=PROGRESS_CONDITIONING_CHOICES, default="none")
     parser.add_argument("--context-size", type=int, default=51)
     parser.add_argument("--append-log", action="store_true")
     parser.add_argument("--smoke", action="store_true")
@@ -530,6 +552,7 @@ def main(argv: Iterable[str] | None = None) -> None:
                     progress_conditioning=args.progress_conditioning,
                     progress_scale=args.progress_scale,
                     context_size=args.context_size,
+                    teacher_progress_conditioning=args.teacher_progress_conditioning,
                 )
                 val_metrics = None
                 if val_loader is not None:
@@ -549,6 +572,7 @@ def main(argv: Iterable[str] | None = None) -> None:
                             progress_conditioning=args.progress_conditioning,
                             progress_scale=args.progress_scale,
                             context_size=args.context_size,
+                            teacher_progress_conditioning=args.teacher_progress_conditioning,
                         )
                     if val_metrics["loss"] < best_val_loss:
                         best_val_loss = float(val_metrics["loss"])

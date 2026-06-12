@@ -456,7 +456,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--temperature", type=float, default=1.0)
-    parser.add_argument("--progress-conditioning", choices=PROGRESS_CONDITIONING_CHOICES, default="auto")
+    parser.add_argument("--progress-conditioning", choices=PROGRESS_CONDITIONING_CHOICES, default="none")
     parser.add_argument("--progress-scale", type=float, default=1.0)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
