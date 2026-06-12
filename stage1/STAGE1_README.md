@@ -184,6 +184,8 @@ Script/stage1/build_real_moconvq_gpt_cache.py
 
 窗口长度默认是 50，因为 `Text2Motion_Transformer` 的 `block_size=52` 会在 motion latent 前额外加入一个 condition token；cache 构建脚本会拒绝 `window-size > 51`。默认 `--max-text-length 256` 会把 T5 文本特征固定为 `(256, 1024)`，过长 caption 会按 T5 tokenizer 截断；`--caption-mode` 当前默认是 `window`，让每个 50-token motion window 使用对应局部 caption。
 
+HumanML3D 的 `new_joints` 只有关节位置，不包含 MoConVQ 物理角色刚体的局部坐标系旋转。当前 cache 默认使用 `--rotation-calibration rest`，把手写骨向量 quaternion 的静止姿态对齐到 `Data/Misc/world.json` 中 MoConVQ 角色的静止 body quaternion。不要把旧的未校准 cache 用作下一轮有效结论。
+
 如果只想先检查 HumanML3D retarget 到 MoConVQ observation 是否合理，可以先运行独立转换脚本。它不会调用 GPT，也不会构建 T5 cache：
 
 ```bash
@@ -227,6 +229,7 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --window-stride 25 \
   --rvq-depth 4 \
   --caption-mode window \
+  --rotation-calibration rest \
   --gpu 0 \
   --output stage1_artifacts/gpt_cache/train_cache.pt \
   --failure-log stage1_artifacts/gpt_cache/train_failures.jsonl
@@ -605,6 +608,19 @@ python Script/stage1/generate_long_motion.py \
   --seed 0
 ```
 
+生成 BVH 后建议同时跑工程指标脚本，记录早停、时长、root 轨迹和重复风险。它不是论文级 FID/R-precision 的替代品，但能避免只凭视频主观判断：
+
+```bash
+python Script/stage1/evaluate_bvh_metrics.py \
+  'stage1_artifacts/generated_bvh_compare/<run_id>/*.bvh' \
+  --sample-stride 6 \
+  --lags 5,10,20,30 \
+  --expected-min-frames 1200 \
+  --output stage1_artifacts/generated_bvh_compare/<run_id>/summary_metrics_script.json
+```
+
+MoConVQ 论文的正式 Text2Motion 量化指标是 HumanML3D test set 上的 FID 和 R-precision，依赖兼容的 HumanML3D/SMPL motion feature extractor。当前仓库尚未包含这套 evaluator，因此 Stage1 暂时用 BVH 工程指标和视频检查做中间诊断；最终“优于 baseline”的结论仍应补齐 FID/R-precision 或等价的文本-动作匹配评估。
+
 长文本动作推荐使用分段生成，让每一段 motion 使用对应局部 caption，而不是每个 rolling chunk 都看同一个完整长文本。分段生成会把上一段末尾的 latent 作为下一段开头的上下文，从而保留动作连续性，同时显式告诉模型当前执行的是哪一段文本。默认 `auto` 会在检测到多段文本时走这条路径；如果没有显式传 `--segment-lengths` 或 `--segment-length`，脚本会把 `--max-length` 自动分配到各文本段：
 
 ```bash
@@ -638,6 +654,7 @@ python Script/stage1/generate_long_motion.py \
 - 同一条合成长序列内优先避免重复使用同一个 HumanML3D sample，减少训练数据里天然循环同一动作的情况。
 - `real_moconvq_cache.py` 默认 `--window-policy clip`，即每个训练 window 只来自单个 clip 内部；跨 clip 边界不再直接喂给 GPT。
 - `real_moconvq_cache.py` 支持 `--forced-transition-margin`，如果 manifest 中仍有 forced transition，可以裁掉边界两侧若干 latent token。
+- `real_moconvq_cache.py` 默认 `--rotation-calibration rest`，用 MoConVQ world rest pose 校准 HumanML3D 位置重定向得到的 body quaternion。前 20 条 fixed train 序列的 observation p99 `|z|` 从未校准的 `19.39` 降到 `5.06`，说明原先存在明显静态 body-frame mismatch。
 
 因此，旧目录里的 cache 不建议继续训练：
 
@@ -690,6 +707,7 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --caption-mode window \
   --window-policy clip \
   --forced-transition-margin 2 \
+  --rotation-calibration rest \
   --gpu 0 \
   --output stage1_artifacts/gpt_cache_fixed/train_cache.pt \
   --failure-log stage1_artifacts/gpt_cache_fixed/train_failures.jsonl
@@ -705,12 +723,13 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --caption-mode window \
   --window-policy clip \
   --forced-transition-margin 2 \
+  --rotation-calibration rest \
   --gpu 0 \
   --output stage1_artifacts/gpt_cache_fixed/val_cache.pt \
   --failure-log stage1_artifacts/gpt_cache_fixed/val_failures.jsonl
 ```
 
-新训练请使用 `stage1_artifacts/gpt_cache_fixed/*.pt`，不要复用旧 cache。
+新训练请使用重新构建且 config 中包含 `rotation_calibration=rest` 的 cache。不要复用旧 cache。
 
 ### 6.10 Fixed Dataset 实验结果
 

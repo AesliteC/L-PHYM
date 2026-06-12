@@ -262,11 +262,14 @@ python Script/stage1/synthesize_long_humanml3d.py \
 python Script/stage1/convert_humanml3d_to_moconvq_observation.py \
   --long-h5 stage1_artifacts/long_humanml3d/train/long_sequences.h5 \
   --manifest stage1_artifacts/long_humanml3d/train/manifest.jsonl \
+  --rotation-calibration rest \
   --output-h5 stage1_artifacts/long_humanml3d/train/moconvq_observations.h5 \
   --summary stage1_artifacts/long_humanml3d/train/moconvq_observations_summary.json
 ```
 
 输出包括 `state_20x13: (T, 20, 13)` 和 `observation_323: (T, 323)`。
+
+`--rotation-calibration rest` 是当前默认值。它用 `Data/Misc/world.json` 中 MoConVQ 物理角色的静止 body quaternion 校准由 HumanML3D joint positions 估计出的 body quaternion。旧的未校准 cache 不应用于下一轮有效 finetune 结论。
 
 ### 5.2 构建真实 MoConVQ GPT cache
 
@@ -282,6 +285,7 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --window-stride 25 \
   --rvq-depth 4 \
   --caption-mode window \
+  --rotation-calibration rest \
   --gpu 0 \
   --fps 20 \
   --max-text-length 256 \
@@ -302,6 +306,7 @@ python Script/stage1/build_real_moconvq_gpt_cache.py \
   --window-stride 25 \
   --rvq-depth 4 \
   --caption-mode window \
+  --rotation-calibration rest \
   --gpu 0 \
   --fps 20 \
   --max-text-length 256 \
@@ -322,6 +327,17 @@ HumanML3D joints_22
   -> T5-large 编码 caption
   -> 切成 window
   -> torch.save(cache)
+```
+
+cache 的 `config` 会记录 `rotation_calibration` 和 `world_json`。正式训练前建议确认：
+
+```bash
+python - <<'PY'
+import torch
+cache = torch.load("stage1_artifacts/gpt_cache/train_cache.pt", map_location="cpu")
+print(cache["config"].get("rotation_calibration"))
+print(cache["config"].get("world_json"))
+PY
 ```
 
 输出 JSON 中需要关注：
@@ -647,6 +663,19 @@ python Script/stage1/generate_long_motion.py \
 ```
 
 `segmented` 模式会把长文本按 joiner 切成局部 caption，每段单独编码文本并生成一段 motion latent；从第二段开始，脚本会把已生成序列末尾的 latent 作为 prefix/context 传给 GPT，只把新生成的 latent 追加到全局序列。`--segment-lengths` 可为每个子动作指定不同 latent token 数，数量必须和分段数一致；如果没有显式传 `--segment-lengths` 或 `--segment-length`，脚本会把 `--max-length` 自动分配到各文本段。它不是完整的高层 planner，但比“每个 rolling chunk 都看同一整段长文本”更符合 MoConGPT 的 50-code 短片段设计。
+
+生成后建议记录 BVH 工程指标：
+
+```bash
+python Script/stage1/evaluate_bvh_metrics.py \
+  'stage1_artifacts/generated_bvh_compare/<run_id>/*.bvh' \
+  --sample-stride 6 \
+  --lags 5,10,20,30 \
+  --expected-min-frames 1200 \
+  --output stage1_artifacts/generated_bvh_compare/<run_id>/summary_metrics_script.json
+```
+
+这个脚本输出早停、时长、root 轨迹、pose velocity 和 lagged pose similarity。它只用于 Stage1 排查，不替代 MoConVQ 论文中 Text2Motion 的 FID/R-precision。正式证明优于 baseline 时，还需要接入 HumanML3D/SMPL feature extractor 或等价文本-动作匹配评估。
 
 ## 11. 常见问题
 
