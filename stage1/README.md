@@ -457,8 +457,8 @@ python -m unittest \
 6. **`new_joints/new_joint_vecs -> base.bvh hierarchy` exporter 仍是桥接路线，但默认已改为更稳的 `joints_ik`。**
    初版 `vec6d` 导出把 HumanML3D/T2M 局部 6D rotation 直接映射到 MoConVQ BVH frame，MP4 中会出现倒置和肢体翻转。当前 `export_humanml3d_to_bvh.py` 默认用 `new_joints` 骨骼方向做 BVH 局部 IK，对两条 smoke 样本的视觉和 token 分布都有明显改善：depth0 cache top fraction 约 `0.069`，native-retarget observation p99 `|z|` 约 `7.89`。但 max `|z|` 仍约 `59.4`，复杂动作仍有夸张弯折，所以它还不是最终训练数据路线，扩大使用前必须做更大样本分布诊断、质量过滤和视频检查。
 
-7. **已新增 batch 级 BVH retarget 质量筛选。**
-   `diagnose_bvh_character_retarget.py --per-file` 会为每个 BVH 单独记录 observation z-score 和 RVQ token 分布；`summarize_bvh_retarget_quality.py` 会按临时工程阈值筛选候选样本。10 条 train split smoke 中，临时阈值接受 5 条、拒绝 5 条；拒绝原因包括高 observation z-score、短序列、以及低 z-score 但 depth0 token collapse。过滤后的 5 条样本 cache 有 18 个窗口、1440 个有效 token，depth0 top fraction 约 `0.039`，已经能通过 head-only 训练 smoke。下一步应扩大到 50/100 条样本并检查视频，而不是直接把 10 条 smoke 当正式训练集。
+7. **已新增 batch 级 BVH retarget 质量筛选，并扩大到 50 条样本诊断。**
+   `diagnose_bvh_character_retarget.py --per-file` 会为每个 BVH 单独记录 observation z-score 和 RVQ token 分布；`summarize_bvh_retarget_quality.py` 会按临时工程阈值筛选候选样本。10 条 train split smoke 中，临时阈值接受 5 条、拒绝 5 条；过滤后的 5 条样本 cache 有 18 个窗口、1440 个有效 token，depth0 top fraction 约 `0.039`，并通过 head-only 训练 smoke。后续 50 条 train split 诊断中，临时阈值接受 10 条、拒绝 40 条；过滤后的 10 条样本 cache 有 39 个窗口、3120 个有效 token，depth0 top fraction 约 `0.041`，也能通过 head-only 训练 smoke。拒绝原因主要包括短序列、observation z-score 异常、以及低 z-score 但 depth0 token collapse。该结果说明质量过滤是必要步骤；正式训练前仍应继续扩大样本、渲染接受/拒绝样本视频，并根据 false positive/false negative 调整阈值。
 
 ## 后续工作
 

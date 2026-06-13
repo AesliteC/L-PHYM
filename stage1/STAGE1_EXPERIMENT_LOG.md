@@ -4521,3 +4521,258 @@ train split limit 50 or 100
 -> build a larger accepted-only cache
 -> run GPU training smoke/full fine-tune when GPU availability is confirmed
 ```
+
+## 2026-06-13: Batch50 joints-IK export quality filtering and filtered-cache smoke
+
+### Purpose
+
+The batch10 experiment proved that the processed-HumanML3D to
+MoConVQ-template BVH bridge can run through native
+`MotionDataSet.add_bvh_with_character()` and produce a trainable GPT cache.
+The next question was whether the same route remains useful on a larger random
+train split sample, and whether the quality filter rejects plausible failure
+modes instead of accepting every exported BVH.
+
+This is still an engineering data-quality experiment, not a model-quality
+claim.  No paper-level FID/R-precision evaluator was used.
+
+### Code change
+
+`export_humanml3d_to_bvh.py` now loads the HumanML3D catalog once in `main()`
+and passes it into `write_humanml3d_bvh()`.  This avoids repeatedly rebuilding
+the text/catalog index when exporting many samples in one run.  The exported
+motion content is unchanged.
+
+### Export and retarget artifacts
+
+Artifacts are local and ignored by Git:
+
+```text
+stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/
+```
+
+The export used:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/export_humanml3d_to_bvh.py \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --split train \
+  --limit 50 \
+  --seed 29 \
+  --output-dir stage1_artifacts/humanml_bvh_export_ik_batch50_20260613 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/export_summary.json
+```
+
+Then BVH engineering metrics and native retarget diagnostics were generated:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/evaluate_bvh_metrics.py \
+  stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/*.bvh \
+  --expected-min-frames 120 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/export_bvh_metrics.json
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/diagnose_bvh_character_retarget.py \
+  stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/*.bvh \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --native-h5 /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --native-observation-key walk1_subject5/observation \
+  --fps 20 \
+  --per-file \
+  --output-json stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/native_retarget_diagnostic.json
+```
+
+One sandboxed diagnostic attempt hit an MPI/socket initialization error
+(`PMPI_Init_thread ... unable to create a socket`).  The same command succeeded
+after rerunning with escalated permissions.  This is an execution-environment
+issue, not a retarget-quality result.
+
+Aggregate native retarget summary:
+
+```text
+state_shape = [7355, 20, 13]
+observation_shape = [7355, 323]
+RVQ token shape = [1838, 4]
+observation |z| mean = 0.723373
+observation |z| p50 = 0.364388
+observation |z| p90 = 1.585061
+observation |z| p95 = 2.502536
+observation |z| p99 = 6.161048
+observation |z| max = 66.685669
+observation frac_gt_3 = 0.036870
+observation frac_gt_5 = 0.014325
+observation frac_gt_10 = 0.004065
+```
+
+Token distribution compared to native `simple_motion_data.h5`:
+
+| depth | exported unique | native unique | JS divergence bits | exported entropy | native entropy |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0 | 310 | 139 | 0.735875 | 7.290868 | 5.981861 |
+| 1 | 435 | 366 | 0.367018 | 8.160762 | 8.072053 |
+| 2 | 441 | 412 | 0.334422 | 8.248014 | 8.378403 |
+| 3 | 416 | 418 | 0.345083 | 7.892674 | 8.374331 |
+
+Compared with batch10, increasing sample diversity substantially improves
+depths 1-3.  Depth0 still differs from the native reference, and the max
+observation z-score is high, so per-file filtering remains necessary.
+
+### Quality filtering
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/summarize_bvh_retarget_quality.py \
+  --retarget-json stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/native_retarget_diagnostic.json \
+  --bvh-metrics-json stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/export_bvh_metrics.json \
+  --export-summary stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/export_summary.json \
+  --output-json stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/quality_summary.json \
+  --output-csv stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/quality_summary.csv
+```
+
+Result:
+
+```text
+total = 50
+accepted = 10
+rejected = 40
+```
+
+Accepted samples:
+
+| sample | frames | tokens | p99 | max | depth0 top | depth0 unique | caption |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| M004417 | 178 | 44 | 7.1374 | 32.5422 | 0.1364 | 23 | throwing or hitting with left arm twice |
+| 003985 | 199 | 49 | 6.5829 | 16.5302 | 0.1429 | 28 | walks around carefully looking for something |
+| M009321 | 199 | 49 | 6.1444 | 19.8138 | 0.1633 | 26 | walks around in a wavy/s pattern |
+| M012210 | 199 | 49 | 5.8896 | 14.4010 | 0.1020 | 24 | walking around in a squiggly line |
+| 009799 | 199 | 49 | 4.7375 | 14.1391 | 0.1020 | 31 | jumps rope |
+| 007392 | 168 | 42 | 3.2787 | 7.3688 | 0.0952 | 23 | shuffles right, left, then right |
+| M013714 | 199 | 49 | 2.9965 | 13.8271 | 0.1224 | 23 | chicken dance and claps hands |
+| 004249 | 195 | 48 | 2.8696 | 4.2709 | 0.1250 | 18 | overhand swimming motions to stretch |
+| 006268 | 140 | 35 | 2.3208 | 5.1012 | 0.1143 | 24 | steps forward, loses balance, resumes walk |
+| M013604 | 193 | 48 | 2.3162 | 4.9922 | 0.1667 | 25 | walks tentatively through slippery or muddy ground |
+
+Reject-reason counts:
+
+| reason | count |
+| --- | ---: |
+| depth0_unique<16 | 27 |
+| depth0_top_frac>0.25 | 24 |
+| frames<120 | 19 |
+| p99_abs_z>8 | 9 |
+| tokens<20 | 8 |
+| max_abs_z>50 | 7 |
+| frac_gt_5>0.05 | 2 |
+
+The dominant rejection mode is not only high z-score.  Many low-z-score samples
+are still rejected because depth0 collapses to a few tokens or the sample is too
+short.  This supports using both observation-space and token-space checks before
+building the GPT cache.
+
+### Filtered GPT cache smoke
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/quality_summary.json \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 20 \
+  --window-stride 10 \
+  --fps 20 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/gpt_cache_filtered.pt \
+  --observation-h5 stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/observations_filtered.h5 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/gpt_cache_filtered_summary.json
+```
+
+Result:
+
+```text
+windows = 39
+latents_shape = [39, 20, 768]
+indices_shape = [39, 20, 4]
+text_features_shape = [39, 256, 1024]
+valid_tokens = 3120
+index_min = 0
+index_max = 511
+unique_sequences = 10
+```
+
+Filtered cache token distribution:
+
+| depth | tokens | unique | entropy bits | top frac |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 780 | 152 | 6.788135 | 0.041026 |
+| 1 | 780 | 254 | 7.688304 | 0.025641 |
+| 2 | 780 | 246 | 7.609442 | 0.034615 |
+| 3 | 780 | 229 | 7.326107 | 0.050000 |
+
+Head-only train smoke:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/train_real_text_gpt.py \
+  --train-cache stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/gpt_cache_filtered.pt \
+  --val-cache stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/gpt_cache_filtered.pt \
+  --init-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --output-dir stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/train_smoke_head \
+  --epochs 1 \
+  --batch-size 1 \
+  --num-workers 0 \
+  --train-scope head \
+  --gpu 0 \
+  --smoke
+```
+
+Result:
+
+```text
+GPU not detected. Defaulting to CPU.
+train_scope=head trainable_parameters=7880448
+epoch=0 train=15.7566/acc=0.0125 val=24.6501/acc=0.1750 elapsed=5.0s
+```
+
+This confirms that the batch50 accepted-only cache can enter the same
+`train_real_text_gpt.py` path as earlier real caches.  It is not a quality
+claim because `--smoke` runs only one batch for train and one batch for val.
+
+### Interpretation
+
+- HumanML3D is still the main Stage1 data route.  The current work replaces the
+  unreliable hand-written HumanML3D-to-observation cache path with a more
+  defensible bridge:
+
+```text
+processed HumanML3D
+-> joints-IK MoConVQ-template BVH export
+-> MoConVQ native BVH-to-character retarget
+-> per-file quality filter
+-> accepted-only GPT cache
+```
+
+- Batch50 improves token distribution over batch10, especially at RVQ depths
+  1-3, but only 20% of sampled clips pass the current thresholds.
+- The thresholds are still preliminary engineering thresholds.  Before using
+  the accepted set for a report-level model claim, accepted and rejected samples
+  should be rendered and inspected for false positives/false negatives.
+- A real LLM in-context learning experiment has still not been run.  Codex
+  interaction is not counted as that experiment.  If the backup route is used,
+  the actual external/local LLM model and saved JSON response must be recorded.
+
+### Next action
+
+Scale the same route to a larger train/val export, render contact sheets for
+accepted and rejected samples, and only then run a conservative MoConGPT
+fine-tune against the baseline GPT.  If the accepted rate remains too low or
+videos show systematic retarget artifacts, restore original HumanML3D/AMASS
+source motion or BVH exports instead of overfitting to the processed-joints
+bridge.

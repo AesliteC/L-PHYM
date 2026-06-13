@@ -21,7 +21,7 @@ _ensure_own_repo_root_on_path()
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from Script.stage1.humanml3d import load_humanml3d_catalog
+from Script.stage1.humanml3d import HumanML3DCatalog, load_humanml3d_catalog
 from Script.stage1.real_moconvq_cache import (
     HUMANML3D_TO_MOCONVQ,
     MOCONVQ_BODY_NAMES,
@@ -298,6 +298,7 @@ def write_humanml3d_bvh(
     output_fps: float = 20.0,
     rotation_source: str = "joints_ik",
     unwrap_euler: bool = True,
+    catalog: HumanML3DCatalog | None = None,
 ) -> dict[str, object]:
     joints, joint_vecs = _load_humanml_motion(humanml_root, sample_id)
     motion = humanml3d_sample_to_bvh_motion(
@@ -320,11 +321,11 @@ def write_humanml3d_bvh(
             handle.write(" ".join(f"{value: .6f}" for value in row))
             handle.write("\n")
     caption = ""
-    catalog = None
-    try:
-        catalog = load_humanml3d_catalog(humanml_root)
-    except Exception:
-        catalog = None
+    if catalog is None:
+        try:
+            catalog = load_humanml3d_catalog(humanml_root)
+        except Exception:
+            catalog = None
     if catalog is not None and sample_id in catalog.by_id:
         captions = catalog.by_id[sample_id].captions
         caption = captions[0]["raw"] if captions else ""
@@ -400,6 +401,11 @@ def main(argv: Iterable[str] | None = None) -> None:
     if not sample_ids:
         raise SystemExit("provide at least one --sample-id or --split")
     output_dir = Path(args.output_dir)
+    catalog = None
+    try:
+        catalog = load_humanml3d_catalog(humanml_root)
+    except Exception:
+        catalog = None
     summaries = [
         write_humanml3d_bvh(
             sample_id=sample_id,
@@ -409,6 +415,7 @@ def main(argv: Iterable[str] | None = None) -> None:
             output_fps=args.fps,
             rotation_source=args.rotation_source,
             unwrap_euler=not args.no_unwrap_euler,
+            catalog=catalog,
         )
         for sample_id in sample_ids
     ]
