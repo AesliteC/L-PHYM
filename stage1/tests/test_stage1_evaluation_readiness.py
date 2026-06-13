@@ -56,12 +56,15 @@ class Stage1EvaluationReadinessTests(unittest.TestCase):
             humanml.mkdir()
             for relative in (
                 "models/evaluator_wrapper.py",
+                "models/modules.py",
                 "utils/eval_trans.py",
+                "utils/word_vectorizer.py",
                 "options/get_eval_option.py",
                 "checkpoints/t2m/text_mot_match/model/finest.tar",
                 "checkpoints/t2m/text_mot_match/opt.txt",
                 "glove/our_vab_data.npy",
                 "glove/our_vab_words.pkl",
+                "glove/our_vab_idx.pkl",
             ):
                 path = evaluator / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,12 +88,15 @@ class Stage1EvaluationReadinessTests(unittest.TestCase):
             humanml.mkdir()
             for relative in (
                 "models/evaluator_wrapper.py",
+                "models/modules.py",
                 "utils/eval_trans.py",
+                "utils/word_vectorizer.py",
                 "options/get_eval_option.py",
                 "checkpoints/t2m/text_mot_match/model/finest.tar",
                 "checkpoints/t2m/text_mot_match/opt.txt",
                 "glove/our_vab_data.npy",
                 "glove/our_vab_words.pkl",
+                "glove/our_vab_idx.pkl",
             ):
                 path = evaluator / relative
                 path.parent.mkdir(parents=True, exist_ok=True)

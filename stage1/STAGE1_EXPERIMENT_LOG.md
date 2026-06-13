@@ -7563,3 +7563,178 @@ The current paper-metric blockers are therefore:
 2. nonzero BVH-to-HumanML3D adapter calibration error, which must be disclosed
    or reduced before strong paper-level claims.
 ```
+
+## 2026-06-13 T2M paper-metric runner skeleton and readiness tightening
+
+### Motivation
+
+After adding the BVH-to-HumanML3D adapter and calibration, the next paper-metric
+gap was not only missing external assets.  The previous readiness gate was also
+too weak: it checked `evaluator_wrapper.py`, `eval_trans.py`, and
+`get_eval_option.py`, but T2M-GPT's evaluator imports additional files:
+
+```text
+models/modules.py
+utils/word_vectorizer.py
+```
+
+and `WordVectorizer('./glove', 'our_vab')` requires:
+
+```text
+glove/our_vab_idx.pkl
+```
+
+Without these, readiness could report a false ready state and fail only at
+runtime.
+
+### Code changes
+
+Updated evaluator readiness / asset helper requirements:
+
+```text
+Script/stage1/check_evaluation_readiness.py
+Script/stage1/prepare_t2m_evaluator_assets.py
+```
+
+Required source files are now:
+
+```text
+models/evaluator_wrapper.py
+models/modules.py
+utils/eval_trans.py
+utils/word_vectorizer.py
+options/get_eval_option.py
+```
+
+Required assets are now:
+
+```text
+checkpoints/t2m/text_mot_match/model/finest.tar
+checkpoints/t2m/text_mot_match/opt.txt
+glove/our_vab_data.npy
+glove/our_vab_words.pkl
+glove/our_vab_idx.pkl
+```
+
+Added a Stage1 paper-metric runner skeleton:
+
+```text
+Script/stage1/evaluate_t2m_paper_metrics.py
+tests/test_stage1_t2m_paper_metrics.py
+```
+
+The runner supports:
+
+```text
+generated MoConVQ/base.bvh files
+  -> prompt TSV mapping from prompt id to caption/tokens
+  -> approximate BVH-to-HumanML3D 263-d feature conversion
+  -> HumanML3D Mean/Std normalization
+  -> T2M evaluator text/motion embeddings
+  -> FID against a HumanML3D reference split
+  -> R-precision and matching score per generated model group
+```
+
+It also supports `--check-only`, which reports planned inputs and missing
+evaluator files without importing the evaluator or requiring checkpoint assets.
+
+### Validation
+
+Commands:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/evaluate_t2m_paper_metrics.py \
+  Script/stage1/prepare_t2m_evaluator_assets.py \
+  Script/stage1/check_evaluation_readiness.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_t2m_paper_metrics \
+  tests.test_stage1_prepare_t2m_evaluator_assets \
+  tests.test_stage1_evaluation_readiness \
+  -v
+```
+
+Result:
+
+```text
+14 tests passed
+```
+
+### Local evaluator source update
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/prepare_t2m_evaluator_assets.py \
+  --root /tmp/stage1_t2m_evaluator_assets \
+  --source-root /tmp/T2M-GPT-stage1-inspect \
+  --copy-sources
+```
+
+Result:
+
+```text
+copied:
+  - models/evaluator_wrapper.py
+  - models/modules.py
+  - utils/eval_trans.py
+  - utils/word_vectorizer.py
+  - options/get_eval_option.py
+
+sources_ready = true
+assets_ready  = false
+```
+
+### Check-only paper-metric route on current best BVHs
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/evaluate_t2m_paper_metrics.py \
+  /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/bvh/*.bvh \
+  --prompts /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/prompts.tsv \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --evaluator-root /tmp/stage1_t2m_evaluator_assets \
+  --output-dir /tmp/stage1_t2m_paper_metrics_check_20260613 \
+  --summary /tmp/stage1_t2m_paper_metrics_check_20260613/summary_after_sources.json \
+  --check-only
+```
+
+Result:
+
+```text
+ready = false
+sources_ready = true
+assets_ready = false
+
+planned prompts:
+  - circle_crouch_stand
+  - sidestep_kick_turn
+  - walk_jump_dance
+  - walk_turn_wave
+
+planned models:
+  - baseline_top_p
+  - finetuned_top_p
+
+missing assets:
+  - checkpoints/t2m/text_mot_match/model/finest.tar
+  - checkpoints/t2m/text_mot_match/opt.txt
+  - glove/our_vab_data.npy
+  - glove/our_vab_words.pkl
+  - glove/our_vab_idx.pkl
+```
+
+### Interpretation
+
+This closes the code-side paper-metric preparation gap: once the five evaluator
+assets are present under `/tmp/stage1_t2m_evaluator_assets`, the same runner can
+be executed without `--check-only` to produce approximate T2M evaluator FID,
+R-precision, and matching score for the current baseline/finetuned BVH suite.
+
+It still does not complete paper-level evaluation because the assets are absent
+locally and because the route remains approximate due to BVH-to-HumanML3D
+skeleton adaptation and 196-frame evaluator truncation.

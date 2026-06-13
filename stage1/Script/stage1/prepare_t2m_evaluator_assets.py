@@ -17,11 +17,14 @@ REQUIRED_T2M_ASSETS = (
     "checkpoints/t2m/text_mot_match/opt.txt",
     "glove/our_vab_data.npy",
     "glove/our_vab_words.pkl",
+    "glove/our_vab_idx.pkl",
 )
 
 T2M_SOURCE_HINTS = (
     "models/evaluator_wrapper.py",
+    "models/modules.py",
     "utils/eval_trans.py",
+    "utils/word_vectorizer.py",
     "options/get_eval_option.py",
 )
 

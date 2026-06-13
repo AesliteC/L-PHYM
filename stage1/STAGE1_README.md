@@ -801,12 +801,15 @@ MoConVQ 论文的正式 Text2Motion 量化指标是 HumanML3D test set 上的 FI
 
 ```text
 models/evaluator_wrapper.py
+models/modules.py
 utils/eval_trans.py
+utils/word_vectorizer.py
 options/get_eval_option.py
 checkpoints/t2m/text_mot_match/model/finest.tar
 checkpoints/t2m/text_mot_match/opt.txt
 glove/our_vab_data.npy
 glove/our_vab_words.pkl
+glove/our_vab_idx.pkl
 ```
 
 为避免 evaluator 资产准备步骤散落在终端历史中，当前提供了 helper：
@@ -835,7 +838,61 @@ python Script/stage1/prepare_t2m_evaluator_assets.py \
   --print-download-commands
 ```
 
-当前 `/tmp/stage1_t2m_evaluator_assets` 已经可以从 `/tmp/T2M-GPT-stage1-inspect` 复制 evaluator source files；readiness 因此只剩 checkpoint/glove assets 缺失。`moconvq` 环境已经安装了 `gdown`，但 2026-06-13 的 Google Drive 下载尝试显示：无代理时网络不可达；使用 `127.0.0.1:7898` 代理可以连接，但 `t2m.zip` 约 1.22GB，速度从约 300KB/s 掉到 70KB/s 左右，2 分 42 秒只下载约 31.5MB，因此已中止并清理不完整 zip。后续需要长时间后台下载、换镜像，或手动放置上述四个 asset 文件。
+当前 `/tmp/stage1_t2m_evaluator_assets` 已经可以从 `/tmp/T2M-GPT-stage1-inspect` 复制 evaluator source files；readiness 因此只剩 checkpoint/glove assets 缺失。`moconvq` 环境已经安装了 `gdown`，但 2026-06-13 的 Google Drive 下载尝试显示：无代理时网络不可达；使用 `127.0.0.1:7898` 代理可以连接，但 `t2m.zip` 约 1.22GB，速度从约 300KB/s 掉到 70KB/s 左右，2 分 42 秒只下载约 31.5MB，因此已中止并清理不完整 zip。后续需要长时间后台下载、换镜像，或手动放置上述五个 asset 文件。
+
+为了让 evaluator assets 一到就能跑正式指标，当前新增了 Stage1 paper-metric runner：
+
+```text
+Script/stage1/evaluate_t2m_paper_metrics.py
+tests/test_stage1_t2m_paper_metrics.py
+```
+
+它的路线是：
+
+```text
+generated MoConVQ/base.bvh
+  -> bvh_to_humanml3d_features.py 近似转成 HumanML3D 263-d feature
+  -> 使用 HumanML3D Mean.npy/Std.npy 归一化
+  -> T2M evaluator motion/text embeddings
+  -> FID vs HumanML3D reference split
+  -> R-precision / matching score for generated prompt-motion pairs
+```
+
+在 assets 缺失时可以先跑 check-only，确认 prompt suite、BVH 输入和缺失项：
+
+```bash
+python Script/stage1/evaluate_t2m_paper_metrics.py \
+  /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/bvh/*.bvh \
+  --prompts /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/prompts.tsv \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --evaluator-root /tmp/stage1_t2m_evaluator_assets \
+  --output-dir /tmp/stage1_t2m_paper_metrics_check_20260613 \
+  --summary /tmp/stage1_t2m_paper_metrics_check_20260613/summary_after_sources.json \
+  --check-only
+```
+
+当前 check-only 结果：
+
+```text
+sources_ready = true
+assets_ready  = false
+planned prompts:
+  circle_crouch_stand
+  sidestep_kick_turn
+  walk_jump_dance
+  walk_turn_wave
+planned models:
+  baseline_top_p
+  finetuned_top_p
+missing assets:
+  checkpoints/t2m/text_mot_match/model/finest.tar
+  checkpoints/t2m/text_mot_match/opt.txt
+  glove/our_vab_data.npy
+  glove/our_vab_words.pkl
+  glove/our_vab_idx.pkl
+```
+
+正式运行去掉 `--check-only` 即可；如果 assets 仍缺失，脚本会退出并写出缺项 summary，不会输出伪 FID/R-precision。注意：这个 runner 仍属于 approximate evaluator-adapter route，因为生成 BVH 先经过 MoConVQ/base.bvh 到 HumanML3D skeleton 的近似转换，并且 T2M evaluator 默认最多消费 196 帧，长序列会按 `--max-motion-length` 截断。
 
 当前已经新增一个 MoConVQ BVH 到 HumanML3D feature 的近似 adapter：
 

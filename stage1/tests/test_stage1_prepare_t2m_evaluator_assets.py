@@ -46,6 +46,7 @@ class Stage1PrepareT2MEvaluatorAssetsTests(unittest.TestCase):
             with zipfile.ZipFile(glove_zip, "w") as archive:
                 archive.writestr("glove/our_vab_data.npy", "")
                 archive.writestr("glove/our_vab_words.pkl", "")
+                archive.writestr("glove/our_vab_idx.pkl", "")
 
             payload = unpack_archives(root / "assets", t2m_zip=t2m_zip, glove_zip=glove_zip)
 

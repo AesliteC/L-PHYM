@@ -23,7 +23,9 @@ ENGINEERING_METRICS = (
 
 T2M_EVALUATOR_SOURCE_HINTS = (
     "models/evaluator_wrapper.py",
+    "models/modules.py",
     "utils/eval_trans.py",
+    "utils/word_vectorizer.py",
     "options/get_eval_option.py",
 )
 
@@ -32,6 +34,7 @@ T2M_REQUIRED_ASSETS = (
     "checkpoints/t2m/text_mot_match/opt.txt",
     "glove/our_vab_data.npy",
     "glove/our_vab_words.pkl",
+    "glove/our_vab_idx.pkl",
 )
 
 STAGE1_BVH_TO_HUMANML3D_ADAPTER = "Script/stage1/bvh_to_humanml3d_features.py"
