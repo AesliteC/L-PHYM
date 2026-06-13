@@ -3935,3 +3935,282 @@ restored AMASS source files, but it needs quality work before scale-up:
    distributions against native MoConVQ data;
 4. only then build a larger GPT cache and train on GPU.
 ```
+
+## 2026-06-13: Joints-IK HumanML3D BVH export improves the bridge path
+
+### Purpose
+
+The previous processed-HumanML3D BVH smoke used `new_joint_vecs` 6D rotations as
+if they were directly compatible with the MoConVQ `base.bvh` rigid-body frame.
+MP4 inspection showed that this assumption is too strong:
+
+```text
+stage1_artifacts/humanml_bvh_export_smoke_20260613/video/000021_contact.png
+stage1_artifacts/humanml_bvh_export_smoke_20260613/video/012314_contact.png
+```
+
+Visual result:
+
+- `000021` (`person is walking normally in a circle`) showed inverted/prone
+  posture changes even though the source caption is a normal walk.
+- `012314` (`playing tennis`) showed large limb flips and twisted body poses.
+
+This made the failure concrete: the route could construct a cache, but the
+exported BVH motion was not a credible training target.
+
+### Code change
+
+Updated:
+
+```text
+Script/stage1/export_humanml3d_to_bvh.py
+tests/test_stage1_humanml3d_bvh_export.py
+```
+
+The exporter now supports two rotation sources:
+
+```text
+--rotation-source joints_ik   # default
+--rotation-source vec6d       # old path, kept for reproducibility
+```
+
+`joints_ik` uses HumanML3D `new_joints` global joint positions to estimate BVH
+local rotations by aligning each MoConVQ BVH node's child offsets to the
+corresponding HumanML3D bone directions.  It then unwraps Euler angles over time
+before writing the `base.bvh` MOTION rows.  The older `vec6d` path is still
+available because it is useful as a negative baseline and for reproducing the
+initial smoke.
+
+### Export and visual inspection
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/export_humanml3d_to_bvh.py \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --sample-id 000021 \
+  --sample-id 012314 \
+  --output-dir stage1_artifacts/humanml_bvh_export_ik_smoke_20260613 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/export_summary.json
+```
+
+Result:
+
+```text
+000021.bvh:
+  frames = 179
+  channels = 63
+  frame_time = 0.05
+  rotation_source = joints_ik
+  unwrap_euler = true
+
+012314.bvh:
+  frames = 170
+  channels = 63
+  frame_time = 0.05
+  rotation_source = joints_ik
+  unwrap_euler = true
+```
+
+Rendered with explicit conda ffmpeg path because plain `ffmpeg` was not on
+`PATH`:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/render_bvh_to_mp4.py \
+  --input stage1_artifacts/humanml_bvh_export_ik_smoke_20260613 \
+  --output-dir stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/video \
+  --ffmpeg /home/chenjie/miniconda3/envs/moconvq/bin/ffmpeg \
+  --fps 20 \
+  --width 960 \
+  --height 720 \
+  --keep-root-motion
+```
+
+Visual result:
+
+- `000021` no longer shows the inverted/prone posture seen in the `vec6d`
+  export; the walk is coarse but readable.
+- `012314` also improves substantially; complex tennis poses are still rough and
+  sometimes over-bent, but the large full-body flips are gone in the contact
+  sheet.
+
+### BVH engineering metrics
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/evaluate_bvh_metrics.py \
+  stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/*.bvh \
+  --expected-min-frames 120 \
+  --output stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/export_bvh_metrics.json
+```
+
+Result:
+
+| sample | frames | duration | root path | root displacement | pose velocity mean | pose variance mean | early stop |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 000021 | 179 | 8.95 | 5.385233 | 0.124187 | 132.143545 | 6310.638096 | false |
+| 012314 | 170 | 8.50 | 5.523310 | 0.094050 | 145.523080 | 4698.496920 | false |
+
+The pose velocity is lower than the earlier `vec6d` export (`198.53` and
+`195.91`), but pose variance remains high.  This matches the visual diagnosis:
+IK fixes catastrophic orientation mismatch but is still a rough bridge.
+
+### Native MoConVQ retarget diagnostic
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/diagnose_bvh_character_retarget.py \
+  stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/000021.bvh \
+  stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/012314.bvh \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --native-h5 /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --native-observation-key walk1_subject5/observation \
+  --fps 20 \
+  --output-json stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/native_retarget_diagnostic.json
+```
+
+Result:
+
+```text
+state_shape = [349, 20, 13]
+observation_shape = [349, 323]
+RVQ token shape = [87, 4]
+observation |z| mean = 0.9015
+observation |z| p95 = 3.1468
+observation |z| p99 = 7.8950
+observation |z| max = 59.4022
+observation frac_gt_5 = 0.0218
+observation frac_gt_10 = 0.0072
+```
+
+Token distribution compared to native `simple_motion_data.h5`:
+
+| depth | exported-BVH unique | native unique | JS divergence bits | exported entropy | native entropy | exported top frac |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 51 | 139 | 0.851726 | 5.348020 | 5.981861 | 0.114943 |
+| 1 | 68 | 366 | 0.790950 | 5.908123 | 8.072053 | 0.068966 |
+| 2 | 61 | 412 | 0.809710 | 5.644944 | 8.378403 | 0.080460 |
+| 3 | 68 | 418 | 0.741603 | 5.910017 | 8.374331 | 0.057471 |
+
+Compared with the earlier `vec6d` smoke, depth0 top fraction improved from about
+`0.333` to about `0.115`, and observation p99 `|z|` improved from about `12.06`
+to about `7.90`.  The high max `|z|` means the route still needs filtering and
+larger-sample diagnostics before formal training.
+
+### GPT cache and training smoke
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --bvh "stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/000021.bvh=person is walking normally in a circle" \
+  --bvh "stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/012314.bvh=a person appears to be playing tennis and shoots the ball with the racket in his right hand" \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 20 \
+  --window-stride 10 \
+  --fps 20 \
+  --output stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/gpt_cache.pt \
+  --observation-h5 stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/observations.h5 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/gpt_cache_summary.json
+```
+
+Result:
+
+```text
+windows = 8
+latents_shape = [8, 20, 768]
+indices_shape = [8, 20, 4]
+text_features_shape = [8, 256, 1024]
+valid_tokens = 640
+index_min = 5
+index_max = 510
+unique_sequences = 2
+```
+
+Cache token distribution:
+
+| depth | tokens | unique | entropy bits | top frac |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 160 | 50 | 5.337615 | 0.068750 |
+| 1 | 160 | 67 | 5.884463 | 0.050000 |
+| 2 | 160 | 63 | 5.611659 | 0.112500 |
+| 3 | 160 | 71 | 5.933638 | 0.062500 |
+
+Training-data loader smoke:
+
+```text
+RealStage1CacheDataset length = 8
+latent batch = (2, 20, 768)
+indices batch = (2, 20, 4)
+text_feature batch = (2, 256, 1024)
+text_mask batch = (2, 256)
+target_mask batch = (2, 20)
+autoregressive pre_latent = (2, 19, 768)
+targets = (2, 20, 4)
+first caption = person is walking normally in a circle
+first sequence_id = 0000_000021
+```
+
+Head-only forward/backward smoke:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/train_real_text_gpt.py \
+  --train-cache stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/gpt_cache.pt \
+  --val-cache stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/gpt_cache.pt \
+  --init-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --output-dir stage1_artifacts/humanml_bvh_export_ik_smoke_20260613/train_smoke_head \
+  --epochs 1 \
+  --batch-size 1 \
+  --num-workers 0 \
+  --train-scope head \
+  --gpu 0 \
+  --smoke
+```
+
+Result:
+
+```text
+GPU not detected. Defaulting to CPU.
+train_scope=head trainable_parameters=7880448
+epoch=0 train=9.5660/acc=0.0000 val=18.2526/acc=0.0500 elapsed=5.3s
+```
+
+This is a pipeline smoke only.  It proves that the IK cache can enter
+`train_real_text_gpt.py` and execute one forward/backward/update step.  It is not
+a quality result and should not be reported as a trained model improvement.
+
+### Interpretation
+
+- The previous `vec6d` exporter should not be used as the main training-data
+  path except as a documented failure baseline.
+- The new default `joints_ik` exporter is a better processed-HumanML3D bridge:
+  it improves visual sanity, token diversity, and observation z-score
+  diagnostics while still using MoConVQ's native BVH-to-character loader.
+- It is still not final.  The high max observation z-score and rough complex
+  poses require larger-sample export diagnostics, quality filtering, and more
+  video inspection before building a real fine-tuning cache.
+
+### Next action
+
+Run a sampled HumanML3D export diagnostic, for example 20 to 100 samples:
+
+```text
+HumanML3D processed samples
+-> export_humanml3d_to_bvh.py --rotation-source joints_ik
+-> render a subset to MP4/contact sheets
+-> diagnose_bvh_character_retarget.py
+-> reject or filter sequences with extreme observation z-score/token collapse
+-> build a larger GPT cache only from acceptable sequences
+```

@@ -30,6 +30,7 @@ from Script.stage1.render_bvh_to_mp4 import parse_bvh
 
 
 DEFAULT_TEMPLATE_BVH = Path(__file__).resolve().parents[2] / "base.bvh"
+ROTATION_SOURCE_CHOICES = ("joints_ik", "vec6d")
 BVH_NODE_TO_MOCONVQ_BODY = {
     "RootJoint": "pelvis",
     "pelvis_lowerback": "lowerBack",
@@ -66,6 +67,27 @@ def _moconvq_body_lookup() -> dict[str, int]:
     return {name: idx for idx, name in enumerate(MOCONVQ_BODY_NAMES)}
 
 
+def _node_to_moconvq_body(nodes) -> dict[int, int]:
+    body_by_name = _moconvq_body_lookup()
+    node_to_body: dict[int, int] = {}
+    for node_id, node in enumerate(nodes):
+        if not node.channels:
+            continue
+        body_name = BVH_NODE_TO_MOCONVQ_BODY.get(node.name)
+        if body_name is None:
+            raise ValueError(f"no MoConVQ body mapping for BVH node {node.name!r}")
+        node_to_body[node_id] = body_by_name[body_name]
+    return node_to_body
+
+
+def _children_by_node(nodes) -> list[list[int]]:
+    children: list[list[int]] = [[] for _ in nodes]
+    for node_id, node in enumerate(nodes):
+        if node.parent is not None:
+            children[node.parent].append(node_id)
+    return children
+
+
 def _load_humanml_motion(humanml_root: Path, sample_id: str) -> tuple[np.ndarray, np.ndarray]:
     root = humanml_root.resolve()
     if (root / "HumanML3D").is_dir():
@@ -88,6 +110,21 @@ def _global_moconvq_rotations(joint_vecs_263: np.ndarray) -> np.ndarray:
     return Rotation.from_quat(mapped.reshape(-1, 4)).as_matrix().reshape(len(mapped), len(MOCONVQ_BODY_NAMES), 3, 3)
 
 
+def _vec6d_local_rotation_matrices(nodes, joint_vecs_263: np.ndarray, node_to_body: dict[int, int]) -> np.ndarray:
+    global_mats = _global_moconvq_rotations(joint_vecs_263)
+    local_mats = np.tile(np.eye(3, dtype=np.float64), (len(joint_vecs_263), len(nodes), 1, 1))
+    for node_id, node in enumerate(nodes):
+        if not node.channels:
+            continue
+        local_mats[:, node_id] = _local_rotation_matrix(
+            node_id=node_id,
+            node_to_body=node_to_body,
+            parent_id=node.parent,
+            global_mats=global_mats,
+        )
+    return local_mats
+
+
 def _local_rotation_matrix(
     node_id: int,
     node_to_body: dict[int, int],
@@ -103,37 +140,135 @@ def _local_rotation_matrix(
     return np.matmul(np.swapaxes(parent, -1, -2), current)
 
 
+def _unit_vector(vec: np.ndarray) -> np.ndarray | None:
+    norm = float(np.linalg.norm(vec))
+    if norm < 1e-8:
+        return None
+    return vec.astype(np.float64) / norm
+
+
+def _single_vector_alignment(source: np.ndarray, target: np.ndarray) -> np.ndarray:
+    source_unit = _unit_vector(source)
+    target_unit = _unit_vector(target)
+    if source_unit is None or target_unit is None:
+        return np.eye(3, dtype=np.float64)
+    dot = float(np.clip(np.dot(source_unit, target_unit), -1.0, 1.0))
+    if dot > 1.0 - 1e-8:
+        return np.eye(3, dtype=np.float64)
+    if dot < -1.0 + 1e-8:
+        axis = np.cross(source_unit, np.array([1.0, 0.0, 0.0], dtype=np.float64))
+        if np.linalg.norm(axis) < 1e-8:
+            axis = np.cross(source_unit, np.array([0.0, 1.0, 0.0], dtype=np.float64))
+        axis = axis / max(float(np.linalg.norm(axis)), 1e-8)
+        return Rotation.from_rotvec(axis * np.pi).as_matrix()
+    axis = np.cross(source_unit, target_unit)
+    axis_norm = max(float(np.linalg.norm(axis)), 1e-8)
+    angle = np.arctan2(axis_norm, dot)
+    return Rotation.from_rotvec(axis / axis_norm * angle).as_matrix()
+
+
+def _align_vectors_matrix(source_vectors: np.ndarray, target_vectors: np.ndarray) -> np.ndarray:
+    source_units = []
+    target_units = []
+    for source, target in zip(source_vectors, target_vectors):
+        source_unit = _unit_vector(source)
+        target_unit = _unit_vector(target)
+        if source_unit is None or target_unit is None:
+            continue
+        source_units.append(source_unit)
+        target_units.append(target_unit)
+    if not source_units:
+        return np.eye(3, dtype=np.float64)
+    if len(source_units) == 1:
+        return _single_vector_alignment(source_units[0], target_units[0])
+    source_arr = np.asarray(source_units)
+    target_arr = np.asarray(target_units)
+    if np.linalg.matrix_rank(source_arr, tol=1e-5) < 2 or np.linalg.matrix_rank(target_arr, tol=1e-5) < 2:
+        return _single_vector_alignment(source_arr[0], target_arr[0])
+    rotation, _rmsd = Rotation.align_vectors(target_arr, source_arr)
+    return rotation.as_matrix()
+
+
+def _joints_ik_local_rotation_matrices(nodes, joints_22: np.ndarray, node_to_body: dict[int, int]) -> np.ndarray:
+    """Estimate BVH local rotations from HumanML3D joint positions.
+
+    HumanML3D's 6D rotations live in the T2M skeleton frame, while `base.bvh`
+    uses MoConVQ rigid-body frames.  For BVH export, matching child bone
+    directions from `new_joints` is a more conservative bridge than treating the
+    6D rotations as directly compatible BVH local rotations.
+    """
+
+    target_positions = joints_22[:, HUMANML3D_TO_MOCONVQ, :].astype(np.float64)
+    children = _children_by_node(nodes)
+    frames = len(joints_22)
+    local_mats = np.tile(np.eye(3, dtype=np.float64), (frames, len(nodes), 1, 1))
+    global_mats = np.tile(np.eye(3, dtype=np.float64), (frames, len(nodes), 1, 1))
+    for frame_id in range(frames):
+        for node_id, node in enumerate(nodes):
+            parent_global = np.eye(3, dtype=np.float64)
+            if node.parent is not None:
+                parent_global = global_mats[frame_id, node.parent]
+            if not node.channels:
+                global_mats[frame_id, node_id] = parent_global
+                continue
+
+            source_vectors: list[np.ndarray] = []
+            target_vectors: list[np.ndarray] = []
+            body_id = node_to_body[node_id]
+            for child_id in children[node_id]:
+                if child_id not in node_to_body:
+                    continue
+                child_body_id = node_to_body[child_id]
+                source_vectors.append(nodes[child_id].offset.astype(np.float64))
+                target_vectors.append(target_positions[frame_id, child_body_id] - target_positions[frame_id, body_id])
+
+            if source_vectors:
+                desired_global = _align_vectors_matrix(np.asarray(source_vectors), np.asarray(target_vectors))
+                local = parent_global.T @ desired_global
+            else:
+                local = np.eye(3, dtype=np.float64)
+                desired_global = parent_global
+            local_mats[frame_id, node_id] = local
+            global_mats[frame_id, node_id] = desired_global
+    return local_mats
+
+
+def _local_eulers_xyz_degrees(nodes, local_mats: np.ndarray, unwrap_euler: bool) -> dict[int, np.ndarray]:
+    eulers: dict[int, np.ndarray] = {}
+    for node_id, node in enumerate(nodes):
+        if not node.channels:
+            continue
+        radians = Rotation.from_matrix(local_mats[:, node_id]).as_euler("XYZ", degrees=False)
+        if unwrap_euler:
+            radians = np.unwrap(radians, axis=0)
+        eulers[node_id] = np.degrees(radians)
+    return eulers
+
+
 def humanml3d_sample_to_bvh_motion(
     joints_22: np.ndarray,
     joint_vecs_263: np.ndarray,
     template_bvh: Path = DEFAULT_TEMPLATE_BVH,
+    rotation_source: str = "joints_ik",
+    unwrap_euler: bool = True,
 ) -> np.ndarray:
+    if rotation_source not in ROTATION_SOURCE_CHOICES:
+        raise ValueError(f"unknown rotation_source {rotation_source!r}; expected one of {ROTATION_SOURCE_CHOICES}")
     nodes, _template_motion, _frame_time = parse_bvh(template_bvh)
-    body_by_name = _moconvq_body_lookup()
-    node_to_body: dict[int, int] = {}
-    for node_id, node in enumerate(nodes):
-        if not node.channels:
-            continue
-        body_name = BVH_NODE_TO_MOCONVQ_BODY.get(node.name)
-        if body_name is None:
-            raise ValueError(f"no MoConVQ body mapping for BVH node {node.name!r}")
-        node_to_body[node_id] = body_by_name[body_name]
-
+    node_to_body = _node_to_moconvq_body(nodes)
     root_positions = joints_22[:, 0, :].astype(np.float64)
-    global_mats = _global_moconvq_rotations(joint_vecs_263)
+    if rotation_source == "vec6d":
+        local_mats = _vec6d_local_rotation_matrices(nodes, joint_vecs_263, node_to_body)
+    else:
+        local_mats = _joints_ik_local_rotation_matrices(nodes, joints_22, node_to_body)
+    eulers = _local_eulers_xyz_degrees(nodes, local_mats, unwrap_euler=unwrap_euler)
     rows: list[list[float]] = []
     for frame_id in range(len(joint_vecs_263)):
         row: list[float] = []
         for node_id, node in enumerate(nodes):
             if not node.channels:
                 continue
-            local_mats = _local_rotation_matrix(
-                node_id=node_id,
-                node_to_body=node_to_body,
-                parent_id=node.parent,
-                global_mats=global_mats,
-            )
-            euler_xyz = Rotation.from_matrix(local_mats[frame_id]).as_euler("XYZ", degrees=True)
+            euler_xyz = eulers[node_id][frame_id]
             for channel in node.channels:
                 axis = channel[0].upper()
                 if channel.endswith("position"):
@@ -160,9 +295,17 @@ def write_humanml3d_bvh(
     output_bvh: Path,
     template_bvh: Path = DEFAULT_TEMPLATE_BVH,
     output_fps: float = 20.0,
+    rotation_source: str = "joints_ik",
+    unwrap_euler: bool = True,
 ) -> dict[str, object]:
     joints, joint_vecs = _load_humanml_motion(humanml_root, sample_id)
-    motion = humanml3d_sample_to_bvh_motion(joints, joint_vecs, template_bvh=template_bvh)
+    motion = humanml3d_sample_to_bvh_motion(
+        joints,
+        joint_vecs,
+        template_bvh=template_bvh,
+        rotation_source=rotation_source,
+        unwrap_euler=unwrap_euler,
+    )
     hierarchy = _template_hierarchy_lines(template_bvh)
     output_bvh.parent.mkdir(parents=True, exist_ok=True)
     with output_bvh.open("w", encoding="utf-8") as handle:
@@ -192,6 +335,8 @@ def write_humanml3d_bvh(
         "channels": int(motion.shape[1]),
         "frame_time": float(1.0 / float(output_fps)),
         "caption": caption,
+        "rotation_source": rotation_source,
+        "unwrap_euler": bool(unwrap_euler),
     }
 
 
@@ -202,6 +347,8 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--template-bvh", default=str(DEFAULT_TEMPLATE_BVH))
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--fps", type=float, default=20.0)
+    parser.add_argument("--rotation-source", choices=ROTATION_SOURCE_CHOICES, default="joints_ik")
+    parser.add_argument("--no-unwrap-euler", action="store_true")
     parser.add_argument("--summary", default="")
     args = parser.parse_args(argv)
 
@@ -215,6 +362,8 @@ def main(argv: Iterable[str] | None = None) -> None:
             output_bvh=output_dir / f"{sample_id}.bvh",
             template_bvh=Path(args.template_bvh),
             output_fps=args.fps,
+            rotation_source=args.rotation_source,
+            unwrap_euler=not args.no_unwrap_euler,
         )
         for sample_id in args.sample_id
     ]

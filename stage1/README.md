@@ -454,8 +454,8 @@ python -m unittest \
 5. **当前本地 HumanML3D 是 processed corpus ready，但不是 native BVH source ready。**
    `/home/chenjie/cc/robotics/HumanML3D` 下的 `all.txt/texts/new_joints/new_joint_vecs` 已对齐，可以用于 catalog、长 caption 合成和诊断；但当前没有 `pose_data/`、标准 AMASS motion `.npz` 或大规模 BVH exports。因此首选的 MoConVQ 原生 `MotionDataSet.add_bvh_with_character()` 数据路线还需要先恢复 source motion 或导出 BVH。
 
-6. **`new_joints/new_joint_vecs -> base.bvh hierarchy` exporter 只是桥接 smoke。**
-   `export_humanml3d_to_bvh.py` 已能把 processed HumanML3D 样本写成 MoConVQ 模板 BVH，并被 `MotionDataSet.add_bvh_with_character()` 读取；但初步诊断中 observation p99 `|z|` 仍偏高、depth0 token 分布偏集中。因此它还不是最终训练数据路线，必须先做视频检查和更大样本分布诊断。
+6. **`new_joints/new_joint_vecs -> base.bvh hierarchy` exporter 仍是桥接路线，但默认已改为更稳的 `joints_ik`。**
+   初版 `vec6d` 导出把 HumanML3D/T2M 局部 6D rotation 直接映射到 MoConVQ BVH frame，MP4 中会出现倒置和肢体翻转。当前 `export_humanml3d_to_bvh.py` 默认用 `new_joints` 骨骼方向做 BVH 局部 IK，对两条 smoke 样本的视觉和 token 分布都有明显改善：depth0 cache top fraction 约 `0.069`，native-retarget observation p99 `|z|` 约 `7.89`。但 max `|z|` 仍约 `59.4`，复杂动作仍有夸张弯折，所以它还不是最终训练数据路线，扩大使用前必须做更大样本分布诊断、质量过滤和视频检查。
 
 ## 后续工作
 
