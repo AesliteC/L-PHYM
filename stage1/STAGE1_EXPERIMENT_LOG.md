@@ -6986,3 +6986,124 @@ Even after the evaluator assets are available, generated MoConVQ BVH/character
 motion still needs a conversion path back to HumanML3D 263-d motion features
 before FID/R-precision are directly comparable to the MoConVQ paper.
 ```
+
+## 2026-06-13 Generation-mode ablation: then-segmented vs rolling
+
+### Motivation
+
+After confirming that `--generation-mode auto` splits multi-stage prompts by
+the default `" then "` joiner, I ran a direct ablation to check whether this
+choice helps the current best checkpoint.
+
+Only the generation mode was changed:
+
+```text
+checkpoint: /tmp/stage1_long_fixed_bvh_native_200_head_seed13_5ep_20260613/checkpoint_epoch_5.pth
+prompts: same 4 Stage1 multi-stage prompts
+seed: 123
+top-p: 0.95
+top-k: 0
+temperature: 1.0
+max-length: 75
+context-size: 30
+chunk-size: 20
+progress-scale: 0.5
+```
+
+Existing best run:
+
+```text
+--generation-mode auto
+```
+
+Since all four prompts contain `" then "`, this resolves to segmented
+generation.
+
+New ablation run:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/run_stage1_model_suite.py \
+  --run-id long_fixed_native200_head_epoch5_rolling_ablation_20260613 \
+  --suite-dir /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_rolling_ablation_20260613 \
+  --baseline-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --finetuned-checkpoint /tmp/stage1_long_fixed_bvh_native_200_head_seed13_5ep_20260613/checkpoint_epoch_5.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --text-encoder t5 \
+  --max-text-length 256 \
+  --max-length 75 \
+  --generation-mode rolling \
+  --context-size 30 \
+  --chunk-size 20 \
+  --top-k 0 \
+  --top-p 0.95 \
+  --temperature 1.0 \
+  --progress-conditioning auto \
+  --baseline-progress-conditioning none \
+  --progress-scale 0.5 \
+  --progress-context-size 51 \
+  --progress-prefix-cap 25 \
+  --seed 123 \
+  --gpu 0 \
+  --expected-min-frames 1200 \
+  --skip-backup
+```
+
+Outputs:
+
+```text
+/tmp/stage1_long_fixed_bvh_native_200_head_epoch5_rolling_ablation_20260613/suite_summary.json
+/tmp/stage1_long_fixed_bvh_native_200_head_epoch5_rolling_ablation_20260613/summary_metrics.json
+/tmp/stage1_long_fixed_bvh_native_200_head_epoch5_rolling_ablation_20260613/bvh/
+```
+
+### Results
+
+Model averages:
+
+| generation mode | model | avg frames | early stop rate | avg root path | avg root displacement | avg pose velocity | avg pose variance |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| auto / then-segmented | baseline top-p | 1062 | 0.75 | 3.472 | 1.268 | 14.052 | 141.194 |
+| auto / then-segmented | head fine-tuned top-p | 1194 | 0.50 | 4.187 | 1.361 | 19.133 | 190.011 |
+| forced rolling | baseline top-p | 768 | 0.75 | 3.166 | 1.020 | 37.226 | 380.162 |
+| forced rolling | head fine-tuned top-p | 930 | 0.50 | 4.279 | 1.627 | 39.383 | 374.359 |
+
+Frames by prompt:
+
+| prompt | segmented baseline | segmented fine-tuned | rolling baseline | rolling fine-tuned |
+| --- | ---: | ---: | ---: | ---: |
+| walk_turn_wave | 816 | 864 | 432 | 432 |
+| circle_crouch_stand | 1176 | 1656 | 816 | 1416 |
+| walk_jump_dance | 1392 | 1392 | 1416 | 1416 |
+| sidestep_kick_turn | 864 | 864 | 408 | 456 |
+
+### Interpretation
+
+The `then`-aware segmented mode is better for the current Stage1 long prompts:
+
+```text
+segmented fine-tuned avg frames: 1194
+rolling fine-tuned avg frames:    930
+
+segmented fine-tuned pose velocity / variance: 19.133 / 190.011
+rolling fine-tuned pose velocity / variance:   39.383 / 374.359
+```
+
+Rolling still preserves the same early-stop rate difference between baseline
+and fine-tuned models, but it produces substantially shorter and more energetic
+motions.  The recommended Stage1 inference setting therefore remains:
+
+```text
+--generation-mode auto
+--segment-joiner " then "
+```
+
+or explicitly:
+
+```text
+--generation-mode segmented
+```
+
+for the current synthetic long-caption convention.

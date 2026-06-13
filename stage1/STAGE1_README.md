@@ -864,6 +864,26 @@ python Script/stage1/generate_long_motion.py \
   --seed 0
 ```
 
+2026-06-13 的 best checkpoint 上做过一次只改变 generation mode 的 ablation，说明当前 `" then "` 分段不是单纯的代码偏好，而是对长 prompt 指标有实际帮助。相同 prompt、seed、top-p、checkpoint 下：
+
+| generation mode | model | avg frames | early stop rate | avg pose velocity | avg pose variance |
+| --- | --- | ---: | ---: | ---: | ---: |
+| auto / then-segmented | baseline | 1062 | 0.75 | 14.052 | 141.194 |
+| auto / then-segmented | head fine-tuned | 1194 | 0.50 | 19.133 | 190.011 |
+| forced rolling | baseline | 768 | 0.75 | 37.226 | 380.162 |
+| forced rolling | head fine-tuned | 930 | 0.50 | 39.383 | 374.359 |
+
+Per-prompt frame counts:
+
+| prompt | segmented baseline | segmented fine-tuned | rolling baseline | rolling fine-tuned |
+| --- | ---: | ---: | ---: | ---: |
+| walk_turn_wave | 816 | 864 | 432 | 432 |
+| circle_crouch_stand | 1176 | 1656 | 816 | 1416 |
+| walk_jump_dance | 1392 | 1392 | 1416 | 1416 |
+| sidestep_kick_turn | 864 | 864 | 408 | 456 |
+
+因此当前正式 Stage1 长文本生成应保留 `--generation-mode auto` 或显式 `--generation-mode segmented`，并继续使用 `" then "` 作为合成 captions 和 prompt suite 的分段 joiner。
+
 ### 6.9 数据问题修复记录
 
 2026-05-29 的评估显示，旧模型虽然能生成更长 BVH，但后半段容易重复或循环。进一步检查发现主要问题在数据侧：
