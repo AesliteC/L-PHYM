@@ -71,6 +71,33 @@ class Stage1BVHCharacterRetargetTests(unittest.TestCase):
         self.assertEqual(len(summary["summaries"][0]["stats"]), 4)
         self.assertEqual(len(summary["comparisons"]), 1)
         self.assertEqual(len(summary["comparisons"][0]["by_depth"]), 4)
+        self.assertEqual(summary["per_file"], [])
+
+    def test_diagnose_bvh_character_retarget_can_report_per_file_quality(self):
+        from Script.stage1 import diagnose_bvh_character_retarget as diag
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            fake_motion = {
+                "state": np.zeros((5, 20, 13), dtype=np.float32),
+                "observation": np.ones((5, 323), dtype=np.float32) * 0.25,
+                "done": np.zeros((5, 1), dtype=bool),
+            }
+
+            with mock.patch.object(diag, "extract_bvh_with_moconvq_character", return_value=fake_motion) as extractor:
+                summary = diag.diagnose_bvh_character_retarget(
+                    [tmp / "a.bvh", tmp / "b.bvh"],
+                    agent=_FakeAgent(),
+                    fps=20,
+                    rvq_depth=4,
+                    per_file=True,
+                )
+
+        self.assertEqual(extractor.call_count, 3)
+        self.assertEqual(len(summary["per_file"]), 2)
+        self.assertEqual(summary["per_file"][0]["path"], str(tmp / "a.bvh"))
+        self.assertEqual(summary["per_file"][0]["observation_shape"], [5, 323])
+        self.assertIn("aggregate_abs_z", summary["per_file"][0]["observation_z"])
 
     def test_main_forwards_motion_dataset_to_agent_loader(self):
         from Script.stage1 import diagnose_bvh_character_retarget as diag
@@ -95,10 +122,11 @@ class Stage1BVHCharacterRetargetTests(unittest.TestCase):
                     }
                 ],
                 "comparisons": [],
+                "per_file": [],
             }
 
             with mock.patch.object(diag, "build_loaded_moconvq_agent", return_value=_FakeAgent()) as loader:
-                with mock.patch.object(diag, "diagnose_bvh_character_retarget", return_value=fake_payload):
+                with mock.patch.object(diag, "diagnose_bvh_character_retarget", return_value=fake_payload) as runner:
                     diag.main(
                         [
                             "toy.bvh",
@@ -106,6 +134,7 @@ class Stage1BVHCharacterRetargetTests(unittest.TestCase):
                             "base.data",
                             "--motion-dataset",
                             str(motion_dataset),
+                            "--per-file",
                             "--output-json",
                             str(out),
                         ]
@@ -113,6 +142,7 @@ class Stage1BVHCharacterRetargetTests(unittest.TestCase):
 
             loader.assert_called_once()
             self.assertEqual(loader.call_args.kwargs["motion_dataset"], motion_dataset)
+            self.assertTrue(runner.call_args.kwargs["per_file"])
             self.assertTrue(out.exists())
 
 

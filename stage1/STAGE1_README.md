@@ -422,6 +422,7 @@ Script/stage1/check_stage1_data_readiness.py
 Script/stage1/export_humanml3d_to_bvh.py
 Script/stage1/build_real_moconvq_gpt_cache.py
 Script/stage1/build_bvh_character_gpt_cache.py
+Script/stage1/summarize_bvh_retarget_quality.py
 Script/stage1/train_real_text_gpt.py
 ```
 
@@ -444,6 +445,13 @@ hierarchy 的桥接路径：导出的 BVH 可以被 MoConVQ 原生
 降到约 `7.89`，且 MP4 视觉检查不再出现大面积倒置。但 max `|z|` 仍约 `59.4`，
 复杂动作仍有夸张弯折，因此扩大使用前仍必须做更大样本 token/observation 分布诊断、
 质量过滤和人工视频检查。
+
+`diagnose_bvh_character_retarget.py --per-file` 和
+`summarize_bvh_retarget_quality.py` 已经把这一质量检查做成可复现筛选表。10 条
+train split smoke 中，临时阈值接受 5 条、拒绝 5 条；拒绝原因包括高
+observation z-score、短序列、以及低 z-score 但 depth0 token collapse。过滤后的
+5 条样本 cache 有 18 个窗口、1440 个有效 token，depth0 top fraction 约 `0.039`，
+并通过 head-only 训练 smoke。该结果只证明筛选闭环可跑，不是最终训练集规模或模型质量结论。
 
 ## 6. 还需要完成的工作
 

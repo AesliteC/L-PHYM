@@ -42,6 +42,20 @@ def parse_bvh_specs(values: list[str]) -> list[tuple[Path, str]]:
     return specs
 
 
+def specs_from_quality_summary(path: Path, accepted_only: bool = True) -> list[tuple[Path, str]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    specs: list[tuple[Path, str]] = []
+    for row in payload.get("rows", []):
+        if accepted_only and not bool(row.get("accepted")):
+            continue
+        bvh_path = Path(str(row["path"]))
+        caption = str(row.get("caption", "")).strip() or bvh_path.stem
+        specs.append((bvh_path, caption))
+    if not specs:
+        raise ValueError(f"quality summary produced no BVH specs: {path}")
+    return specs
+
+
 def _write_observation_h5(path: Path, rows: list[tuple[str, np.ndarray, str]]) -> None:
     import h5py
 
@@ -113,6 +127,16 @@ def main(argv: Iterable[str] | None = None) -> None:
         default=[],
         help="Alias for --bvh; accepted for consistency with native cache specs.",
     )
+    parser.add_argument(
+        "--quality-summary",
+        default="",
+        help="Optional summarize_bvh_retarget_quality.py JSON; accepted rows are converted to BVH specs.",
+    )
+    parser.add_argument(
+        "--include-rejected-quality",
+        action="store_true",
+        help="Use all quality-summary rows instead of accepted rows only.",
+    )
     parser.add_argument("--base-data", default="moconvq_base.data")
     parser.add_argument("--motion-dataset", default="")
     parser.add_argument("--text-model", default="t5-large")
@@ -129,9 +153,16 @@ def main(argv: Iterable[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     raw_specs = args.bvh + args.motion
-    if not raw_specs:
-        raise SystemExit("provide at least one --bvh '<path.bvh>=<caption>'")
     bvh_specs = parse_bvh_specs(raw_specs)
+    if args.quality_summary:
+        bvh_specs.extend(
+            specs_from_quality_summary(
+                Path(args.quality_summary),
+                accepted_only=not args.include_rejected_quality,
+            )
+        )
+    if not bvh_specs:
+        raise SystemExit("provide at least one --bvh '<path.bvh>=<caption>' or --quality-summary")
 
     import MoConVQCore.Utils.pytorch_utils as ptu
 

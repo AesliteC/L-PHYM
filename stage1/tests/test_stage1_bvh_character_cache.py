@@ -35,6 +35,32 @@ class Stage1BVHCharacterCacheTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_bvh_specs(["walk.bvh"])
 
+    def test_specs_from_quality_summary_uses_accepted_rows_by_default(self):
+        import json
+
+        from Script.stage1.build_bvh_character_gpt_cache import specs_from_quality_summary
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            summary = tmp / "quality.json"
+            summary.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {"path": "good.bvh", "caption": "a good motion", "accepted": True},
+                            {"path": "bad.bvh", "caption": "a bad motion", "accepted": False},
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            specs = specs_from_quality_summary(summary)
+            self.assertEqual(specs, [(Path("good.bvh"), "a good motion")])
+
+            all_specs = specs_from_quality_summary(summary, accepted_only=False)
+            self.assertEqual([path for path, _caption in all_specs], [Path("good.bvh"), Path("bad.bvh")])
+
     def test_main_forwards_motion_dataset_to_agent_loader(self):
         import torch
 

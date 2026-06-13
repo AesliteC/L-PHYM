@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Iterable
 import argparse
 import json
+import random
 import sys
 
 
@@ -340,10 +341,45 @@ def write_humanml3d_bvh(
     }
 
 
+def select_humanml3d_sample_ids(
+    humanml_root: Path,
+    sample_ids: Iterable[str] = (),
+    split: str = "",
+    limit: int | None = None,
+    seed: int = 0,
+    shuffle: bool = True,
+) -> list[str]:
+    selected = [str(sample_id) for sample_id in sample_ids]
+    if split:
+        catalog = load_humanml3d_catalog(humanml_root)
+        if split not in catalog.split_ids:
+            raise ValueError(f"unknown HumanML3D split {split!r}; expected one of {sorted(catalog.split_ids)}")
+        split_ids = list(catalog.split_ids[split])
+        if shuffle:
+            random.Random(seed).shuffle(split_ids)
+        if limit is not None:
+            if limit < 1:
+                raise ValueError("--limit must be positive")
+            split_ids = split_ids[:limit]
+        selected.extend(split_ids)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for sample_id in selected:
+        if sample_id not in seen:
+            deduped.append(sample_id)
+            seen.add(sample_id)
+    return deduped
+
+
 def main(argv: Iterable[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--humanml-root", default="../HumanML3D")
     parser.add_argument("--sample-id", action="append", default=[], help="HumanML3D sample id to export.")
+    parser.add_argument("--split", default="", help="Optionally export a reproducible sample from this HumanML3D split.")
+    parser.add_argument("--limit", type=int, default=None, help="Maximum number of split samples to export.")
+    parser.add_argument("--seed", type=int, default=0, help="Seed used when sampling from --split.")
+    parser.add_argument("--no-shuffle", action="store_true", help="Use the first --limit ids from --split instead of shuffling.")
     parser.add_argument("--template-bvh", default=str(DEFAULT_TEMPLATE_BVH))
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--fps", type=float, default=20.0)
@@ -352,22 +388,50 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--summary", default="")
     args = parser.parse_args(argv)
 
-    if not args.sample_id:
-        raise SystemExit("provide at least one --sample-id")
+    humanml_root = Path(args.humanml_root)
+    sample_ids = select_humanml3d_sample_ids(
+        humanml_root=humanml_root,
+        sample_ids=args.sample_id,
+        split=args.split,
+        limit=args.limit,
+        seed=args.seed,
+        shuffle=not args.no_shuffle,
+    )
+    if not sample_ids:
+        raise SystemExit("provide at least one --sample-id or --split")
     output_dir = Path(args.output_dir)
     summaries = [
         write_humanml3d_bvh(
             sample_id=sample_id,
-            humanml_root=Path(args.humanml_root),
+            humanml_root=humanml_root,
             output_bvh=output_dir / f"{sample_id}.bvh",
             template_bvh=Path(args.template_bvh),
             output_fps=args.fps,
             rotation_source=args.rotation_source,
             unwrap_euler=not args.no_unwrap_euler,
         )
-        for sample_id in args.sample_id
+        for sample_id in sample_ids
     ]
-    text = json.dumps({"exports": summaries}, indent=2, ensure_ascii=False)
+    text = json.dumps(
+        {
+            "config": {
+                "humanml_root": str(humanml_root),
+                "template_bvh": args.template_bvh,
+                "output_dir": str(output_dir),
+                "fps": float(args.fps),
+                "rotation_source": args.rotation_source,
+                "unwrap_euler": not args.no_unwrap_euler,
+                "sample_ids": sample_ids,
+                "split": args.split,
+                "limit": args.limit,
+                "seed": args.seed,
+                "shuffle": not args.no_shuffle,
+            },
+            "exports": summaries,
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
     if args.summary:
         summary = Path(args.summary)
         summary.parent.mkdir(parents=True, exist_ok=True)

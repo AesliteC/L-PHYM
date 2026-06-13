@@ -4214,3 +4214,310 @@ HumanML3D processed samples
 -> reject or filter sequences with extreme observation z-score/token collapse
 -> build a larger GPT cache only from acceptable sequences
 ```
+
+## 2026-06-13: Batch10 joints-IK export quality filtering and filtered-cache smoke
+
+### Purpose
+
+The two-sample IK smoke showed that the route is promising, but two examples are
+too few to decide whether the processed-HumanML3D BVH bridge can feed training.
+This run adds the missing reproducible batch controls and a preliminary
+engineering filter:
+
+```text
+export_humanml3d_to_bvh.py --split/--limit/--seed
+diagnose_bvh_character_retarget.py --per-file
+summarize_bvh_retarget_quality.py
+build_bvh_character_gpt_cache.py --quality-summary
+```
+
+The intent is to move from "the bridge can run" to "we can identify which
+exported BVHs are plausible cache candidates."
+
+### Code changes
+
+Updated:
+
+```text
+Script/stage1/export_humanml3d_to_bvh.py
+Script/stage1/diagnose_bvh_character_retarget.py
+Script/stage1/build_bvh_character_gpt_cache.py
+```
+
+Added:
+
+```text
+Script/stage1/summarize_bvh_retarget_quality.py
+tests/test_stage1_bvh_retarget_quality.py
+```
+
+Key behavior:
+
+- exporter can now sample from a HumanML3D split with `--split`, `--limit`, and
+  `--seed`;
+- retarget diagnostic can emit per-file z-score/token summaries with
+  `--per-file`;
+- quality summarizer combines export summary, BVH metrics, and retarget
+  diagnostics into accepted/rejected rows;
+- BVH cache builder can consume accepted rows directly with `--quality-summary`.
+
+### Batch10 export
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/export_humanml3d_to_bvh.py \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --split train \
+  --limit 10 \
+  --seed 13 \
+  --output-dir stage1_artifacts/humanml_bvh_export_ik_batch10_20260613 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/export_summary.json
+```
+
+Selected sample ids:
+
+```text
+007115, 008684, 011137, M001207, M009990,
+012887, M005884, M006200, 012245, M012785
+```
+
+The batch includes walk/run/jump/swing/cartwheel/near-static arm motions, so it
+is a useful tiny stress test.  Export time for 10 samples was about 32 seconds.
+
+### Aggregate retarget diagnostic
+
+Commands:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/evaluate_bvh_metrics.py \
+  stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/*.bvh \
+  --expected-min-frames 120 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/export_bvh_metrics.json
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/diagnose_bvh_character_retarget.py \
+  stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/*.bvh \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --native-h5 /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --native-observation-key walk1_subject5/observation \
+  --fps 20 \
+  --per-file \
+  --output-json stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/native_retarget_diagnostic.json
+```
+
+Aggregate result:
+
+```text
+state_shape = [1585, 20, 13]
+observation_shape = [1585, 323]
+RVQ token shape = [396, 4]
+observation |z| mean = 0.7923
+observation |z| p95 = 2.8537
+observation |z| p99 = 6.3582
+observation |z| max = 45.4098
+observation frac_gt_5 = 0.0162
+observation frac_gt_10 = 0.0028
+```
+
+Token distribution compared to native `simple_motion_data.h5`:
+
+| depth | exported unique | native unique | JS divergence bits | exported entropy | native entropy | exported top frac |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 142 | 139 | 0.795736 | 6.275738 | 5.981861 | 0.113636 |
+| 1 | 205 | 366 | 0.549635 | 7.060256 | 8.072053 | 0.113636 |
+| 2 | 212 | 412 | 0.509432 | 7.272277 | 8.378403 | 0.060606 |
+| 3 | 170 | 418 | 0.596195 | 6.537737 | 8.374331 | 0.095960 |
+
+Compared with the two-sample IK smoke, larger batch diversity improves JS
+divergence at depths 1-3 and increases unique token coverage.
+
+### Preliminary quality filter
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/summarize_bvh_retarget_quality.py \
+  --retarget-json stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/native_retarget_diagnostic.json \
+  --bvh-metrics-json stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/export_bvh_metrics.json \
+  --export-summary stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/export_summary.json \
+  --output-json stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/quality_summary.json \
+  --output-csv stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/quality_summary.csv
+```
+
+Default preliminary thresholds:
+
+```text
+min_frames = 120
+min_tokens = 20
+max_p99_abs_z = 8.0
+max_max_abs_z = 50.0
+max_frac_gt_5 = 0.05
+max_depth0_top_frac = 0.25
+min_depth0_unique = 16
+```
+
+Result:
+
+```text
+total = 10
+accepted = 5
+rejected = 5
+```
+
+Accepted:
+
+| sample | frames | tokens | p99 | max | depth0 top | depth0 unique | caption |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 011137 | 128 | 32 | 6.8734 | 25.4324 | 0.0938 | 24 | run right, turn, run left, then middle |
+| M006200 | 199 | 49 | 6.5083 | 43.5899 | 0.1020 | 29 | swinging a club or bat |
+| 007115 | 199 | 49 | 5.7387 | 13.1242 | 0.1429 | 23 | walking in an s pattern |
+| M009990 | 181 | 45 | 5.5772 | 10.0675 | 0.1333 | 23 | runs sideways repeatedly |
+| 012887 | 148 | 37 | 4.8993 | 12.8066 | 0.1622 | 21 | jumping straight up |
+
+Rejected:
+
+| sample | reason |
+| --- | --- |
+| M005884 | high p99/frac_gt_5; cartwheel-like motion remains hard for the bridge |
+| 008684 | short and token-collapsed |
+| 012245 | short, too few tokens, token-collapsed |
+| M012785 | low z-score but severe depth0 token collapse |
+| M001207 | low z-score but depth0 token collapse |
+
+This is an important distinction: low observation z-score is not sufficient.
+Near-static or low-diversity samples can be physically normal but poor GPT
+fine-tuning targets if their RVQ stream collapses to a few tokens.
+
+### Filtered GPT cache smoke
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/quality_summary.json \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 20 \
+  --window-stride 10 \
+  --fps 20 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/gpt_cache_filtered.pt \
+  --observation-h5 stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/observations_filtered.h5 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_batch10_20260613/gpt_cache_filtered_summary.json
+```
+
+Result:
+
+```text
+windows = 18
+latents_shape = [18, 20, 768]
+indices_shape = [18, 20, 4]
+text_features_shape = [18, 256, 1024]
+valid_tokens = 1440
+index_min = 0
+index_max = 510
+unique_sequences = 5
+```
+
+Filtered cache token distribution:
+
+| depth | tokens | unique | entropy bits | top frac |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 360 | 106 | 6.410223 | 0.038889 |
+| 1 | 360 | 144 | 6.917245 | 0.027778 |
+| 2 | 360 | 151 | 6.970901 | 0.027778 |
+| 3 | 360 | 131 | 6.531636 | 0.080556 |
+
+Training-data loader smoke:
+
+```text
+RealStage1CacheDataset length = 18
+latent batch = (2, 20, 768)
+indices batch = (2, 20, 4)
+text_feature batch = (2, 256, 1024)
+text_mask batch = (2, 256)
+target_mask batch = (2, 20)
+autoregressive pre_latent = (2, 19, 768)
+targets = (2, 20, 4)
+first caption = a person runs to the right, turns around and runs to the left, then runs towards the middle.
+first sequence_id = 0000_011137
+```
+
+Head-only forward/backward smoke:
+
+```text
+GPU not detected. Defaulting to CPU.
+train_scope=head trainable_parameters=7880448
+epoch=0 train=7.3669/acc=0.0000 val=28.2333/acc=0.0875 elapsed=7.2s
+```
+
+This confirms the filtered cache can enter `train_real_text_gpt.py`, but it is
+still a tiny smoke.  It should not be reported as model improvement.
+
+### Interpretation
+
+- The Stage1 main HumanML3D route now has a reproducible engineering loop:
+
+```text
+processed HumanML3D split sample
+-> joints-IK BVH export
+-> MoConVQ native BVH-to-character retarget
+-> per-file quality filter
+-> accepted-only GPT cache
+-> training smoke
+```
+
+- The current bottleneck is no longer only code wiring.  It is dataset quality
+  control and scale: thresholds need to be tested on at least 50-100 samples,
+  with video inspection for accepted and rejected examples.
+- Rejected examples are informative and should stay in the experiment record:
+  they show that cartwheels/acrobatics and token-collapsed near-static clips are
+  not safe to include blindly.
+
+### Verification
+
+Commands:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/export_humanml3d_to_bvh.py \
+  Script/stage1/diagnose_bvh_character_retarget.py \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  Script/stage1/summarize_bvh_retarget_quality.py \
+  tests/test_stage1_humanml3d_bvh_export.py \
+  tests/test_stage1_bvh_character_retarget.py \
+  tests/test_stage1_bvh_character_cache.py \
+  tests/test_stage1_bvh_retarget_quality.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_humanml3d_bvh_export \
+  tests.test_stage1_bvh_character_retarget \
+  tests.test_stage1_bvh_character_cache \
+  tests.test_stage1_bvh_retarget_quality \
+  -v
+```
+
+Result:
+
+```text
+py_compile passed
+18 tests passed
+```
+
+### Next action
+
+Run the same loop on a larger sample:
+
+```text
+train split limit 50 or 100
+-> render contact sheets for accepted/rejected examples
+-> adjust thresholds if false positives/false negatives are obvious
+-> build a larger accepted-only cache
+-> run GPU training smoke/full fine-tune when GPU availability is confirmed
+```

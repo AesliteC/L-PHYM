@@ -113,6 +113,7 @@ def diagnose_bvh_character_retarget(
     flip: bool = False,
     native_h5: Path | None = None,
     native_observation_key: str = "walk1_subject5/observation",
+    per_file: bool = False,
 ) -> dict[str, object]:
     motion = extract_bvh_with_moconvq_character(bvh_files, agent=agent, fps=fps, flip=flip)
     observation = motion["observation"]
@@ -131,6 +132,22 @@ def diagnose_bvh_character_retarget(
 
     summaries: list[dict[str, object]] = [bvh_summary]
     comparisons: list[dict[str, object]] = []
+    per_file_summaries: list[dict[str, object]] = []
+    if per_file:
+        for bvh_file in bvh_files:
+            single_motion = extract_bvh_with_moconvq_character([bvh_file], agent=agent, fps=fps, flip=flip)
+            single_observation = single_motion["observation"]
+            single_indices = encode_observation_indices(agent, single_observation, rvq_depth=rvq_depth)
+            per_file_summaries.append(
+                {
+                    "path": str(bvh_file),
+                    "state_shape": list(single_motion["state"].shape),
+                    "observation_shape": list(single_observation.shape),
+                    "shape": list(single_indices.shape),
+                    "observation_z": summarize_observation_against_agent(agent, single_observation),
+                    "stats": token_distribution_stats(single_indices),
+                }
+            )
     if native_h5 is not None:
         native_summary = summarize_native_observation_tokens(
             native_h5,
@@ -150,12 +167,17 @@ def diagnose_bvh_character_retarget(
     return {
         "summaries": summaries,
         "comparisons": comparisons,
+        "per_file": per_file_summaries,
     }
 
 
 def _compact_payload(payload: dict[str, object]) -> dict[str, object]:
     compact = dict(payload)
     compact["summaries"] = [compact_stats(summary) for summary in payload["summaries"]]  # type: ignore[index]
+    compact["per_file"] = [
+        compact_stats(summary)
+        for summary in payload.get("per_file", [])  # type: ignore[arg-type]
+    ]
     return compact
 
 
@@ -168,6 +190,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--rvq-depth", type=int, default=4)
     parser.add_argument("--flip", action="store_true")
+    parser.add_argument("--per-file", action="store_true", help="Also diagnose each BVH independently for filtering.")
     parser.add_argument("--native-h5", default="")
     parser.add_argument("--native-observation-key", default="walk1_subject5/observation")
     parser.add_argument("--output-json", default="")
@@ -187,6 +210,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         flip=args.flip,
         native_h5=Path(args.native_h5) if args.native_h5 else None,
         native_observation_key=args.native_observation_key,
+        per_file=args.per_file,
     )
     if args.output_json:
         output = Path(args.output_json)

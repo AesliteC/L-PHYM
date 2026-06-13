@@ -146,6 +146,33 @@ class Stage1HumanML3DBVHExportTests(unittest.TestCase):
                 rotation_source="bad",
             )
 
+    def test_select_sample_ids_uses_reproducible_split_sampling_and_dedupes(self):
+        from Script.stage1.export_humanml3d_to_bvh import select_humanml3d_sample_ids
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            first = _write_minimal_humanml(root, "000001", frames=4)
+            for sample_id in ("000002", "000003"):
+                _write_minimal_humanml(root, sample_id, frames=4)
+            ids = ["000001", "000002", "000003"]
+            for split in ("all", "train", "val", "test", "train_val"):
+                (first / f"{split}.txt").write_text("\n".join(ids) + "\n", encoding="utf-8")
+
+            selected_a = select_humanml3d_sample_ids(first, split="train", limit=2, seed=7)
+            selected_b = select_humanml3d_sample_ids(first, split="train", limit=2, seed=7)
+            self.assertEqual(selected_a, selected_b)
+            self.assertEqual(len(selected_a), 2)
+
+            selected = select_humanml3d_sample_ids(
+                first,
+                sample_ids=["000001"],
+                split="train",
+                limit=2,
+                seed=7,
+                shuffle=False,
+            )
+            self.assertEqual(selected, ["000001", "000002"])
+
     def test_export_rejects_too_short_processed_motion(self):
         from Script.stage1.export_humanml3d_to_bvh import write_humanml3d_bvh
 
