@@ -2,12 +2,35 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+<<<<<<< HEAD
 
 import torch
 import torch.nn.functional as F
 from torch.distributions import Categorical
 
 import MoConVQCore.Utils.pytorch_utils as ptu
+=======
+import sys
+
+
+def _ensure_own_repo_root_on_path(package: str | None = __package__) -> None:
+    if package not in {None, ""}:
+        return
+    repo_root = str(Path(__file__).resolve().parents[2])
+    if not sys.path or sys.path[0] != repo_root:
+        sys.path.insert(0, repo_root)
+
+
+_ensure_own_repo_root_on_path()
+
+import torch
+
+import MoConVQCore.Utils.pytorch_utils as ptu
+from Script.stage1.segment_conditioning import (
+    PROGRESS_CONDITIONING_CHOICES,
+    add_progress_to_clip_feature,
+)
+>>>>>>> origin/main
 from Script.stage1.train_text_gpt import build_text_gpt_model, gpt_config
 
 
@@ -40,6 +63,7 @@ def encode_text_with_hash(text: str, device: str) -> tuple[torch.Tensor, torch.T
     )
 
 
+<<<<<<< HEAD
 def sample_model_latents(
     model,
     clip_feature: torch.Tensor,
@@ -107,6 +131,8 @@ def sample_model_latents(
     return ls[:, :-1, :], torch.cat(idxs, dim=0)
 
 
+=======
+>>>>>>> origin/main
 def sample_latents_rolling(
     model,
     clip_feature: torch.Tensor,
@@ -117,7 +143,17 @@ def sample_latents_rolling(
     chunk_size: int | None = None,
     categorical: bool = True,
     allow_early_stop: bool = False,
+<<<<<<< HEAD
     suppress_end_token: bool = False,
+=======
+    top_k: int = 0,
+    top_p: float = 0.95,
+    temperature: float = 1.0,
+    progress_conditioning: str = "none",
+    progress_scale: float = 1.0,
+    progress_context_size: int | None = None,
+    progress_prefix_cap: int | None = None,
+>>>>>>> origin/main
 ) -> torch.Tensor:
     """Generate arbitrary-length latent sequences using fixed-size GPT contexts."""
     if max_length < 1:
@@ -149,15 +185,38 @@ def sample_latents_rolling(
             pre_latent = generated[:, -effective_context:, :]
             context_len = int(pre_latent.shape[1])
         sample_length = current_chunk + 1
+<<<<<<< HEAD
         sampled, _ = sample_model_latents(
             model,
             clip_feature,
+=======
+        step_clip_feature = add_progress_to_clip_feature(
+            clip_feature,
+            mode=progress_conditioning,
+            segment_idx=0,
+            num_segments=1,
+            segment_progress=0.0,
+            prefix_lengths=min(context_len, progress_prefix_cap) if progress_prefix_cap is not None else context_len,
+            context_size=progress_context_size if progress_context_size is not None else context_size,
+            scale=progress_scale,
+            has_segment_metadata=True,
+            is_segmented=False,
+        )
+        sampled, _ = model.sample(
+            step_clip_feature,
+>>>>>>> origin/main
             bert_feature,
             bert_mask,
             if_categorial=categorical,
             max_length=sample_length,
             pre_latent=pre_latent,
+<<<<<<< HEAD
             suppress_end_token=suppress_end_token,
+=======
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+>>>>>>> origin/main
         )
         new_latents = sampled[:, context_len:, :]
         if new_latents.shape[1] < current_chunk:
@@ -190,7 +249,13 @@ def sample_latents_with_prefix(
     chunk_size: int | None = None,
     categorical: bool = True,
     allow_early_stop: bool = False,
+<<<<<<< HEAD
     suppress_end_token: bool = False,
+=======
+    top_k: int = 0,
+    top_p: float = 0.95,
+    temperature: float = 1.0,
+>>>>>>> origin/main
 ) -> torch.Tensor:
     if max_length < 1:
         raise ValueError("max_length must be positive")
@@ -218,15 +283,25 @@ def sample_latents_with_prefix(
                 )
             pre_latent = generated[:, -effective_context:, :]
             context_len = int(pre_latent.shape[1])
+<<<<<<< HEAD
         sampled, _ = sample_model_latents(
             model,
+=======
+        sampled, _ = model.sample(
+>>>>>>> origin/main
             clip_feature,
             bert_feature,
             bert_mask,
             if_categorial=categorical,
             max_length=current_chunk + 1,
             pre_latent=pre_latent,
+<<<<<<< HEAD
             suppress_end_token=suppress_end_token,
+=======
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+>>>>>>> origin/main
         )
         new_latents = sampled[:, context_len:, :]
         if new_latents.shape[1] < current_chunk:
@@ -309,8 +384,19 @@ def sample_latents_segmented(
     chunk_size: int | None,
     categorical: bool,
     allow_early_stop: bool,
+<<<<<<< HEAD
     suppress_end_token: bool = False,
     segment_lengths: list[int] | None = None,
+=======
+    segment_lengths: list[int] | None = None,
+    top_k: int = 0,
+    top_p: float = 0.95,
+    temperature: float = 1.0,
+    progress_conditioning: str = "auto",
+    progress_scale: float = 1.0,
+    progress_context_size: int | None = None,
+    progress_prefix_cap: int | None = None,
+>>>>>>> origin/main
 ) -> torch.Tensor:
     if not text_segments:
         raise ValueError("text_segments must not be empty")
@@ -319,6 +405,10 @@ def sample_latents_segmented(
     if segment_lengths is not None and len(segment_lengths) != len(text_segments):
         raise ValueError(f"expected {len(text_segments)} segment lengths, got {len(segment_lengths)}")
     generated: torch.Tensor | None = None
+<<<<<<< HEAD
+=======
+    total_segments = len(text_segments)
+>>>>>>> origin/main
     for segment_idx, segment in enumerate(text_segments):
         current_segment_length = segment_lengths[segment_idx] if segment_lengths is not None else segment_length
         if text_encoder == "t5":
@@ -332,10 +422,36 @@ def sample_latents_segmented(
             bert_feature, bert_mask = encode_text_with_hash(segment, device=device)
         else:
             raise ValueError(f"unknown text encoder: {text_encoder}")
+<<<<<<< HEAD
 
         segment_latents = sample_latents_with_prefix(
             model=model,
             clip_feature=clip_feature,
+=======
+        segment_clip_feature = add_progress_to_clip_feature(
+            clip_feature,
+            mode=progress_conditioning,
+            segment_idx=segment_idx,
+            num_segments=total_segments,
+            segment_progress=float(segment_idx / max(total_segments - 1, 1)) if total_segments > 1 else 0.0,
+            prefix_lengths=0
+            if generated is None
+            else min(
+                int(generated.shape[1]),
+                int(progress_prefix_cap)
+                if progress_prefix_cap is not None
+                else int(context_size or model.get_block_size() - 1),
+            ),
+            context_size=progress_context_size if progress_context_size is not None else context_size,
+            scale=progress_scale,
+            has_segment_metadata=True,
+            is_segmented=True,
+        )
+
+        segment_latents = sample_latents_with_prefix(
+            model=model,
+            clip_feature=segment_clip_feature,
+>>>>>>> origin/main
             bert_feature=bert_feature,
             bert_mask=bert_mask,
             max_length=current_segment_length,
@@ -344,11 +460,19 @@ def sample_latents_segmented(
             chunk_size=chunk_size,
             categorical=categorical,
             allow_early_stop=allow_early_stop,
+<<<<<<< HEAD
             suppress_end_token=suppress_end_token,
         )
         generated = segment_latents if generated is None else torch.cat([generated, segment_latents], dim=1)
         if segment_latents.shape[1] < current_segment_length and allow_early_stop:
             break
+=======
+            top_k=top_k,
+            top_p=top_p,
+            temperature=temperature,
+        )
+        generated = segment_latents if generated is None else torch.cat([generated, segment_latents], dim=1)
+>>>>>>> origin/main
     if generated is None:
         raise RuntimeError("segmented generation produced no latents")
     return generated
@@ -360,6 +484,10 @@ def main():
     parser.add_argument("--text", required=True)
     parser.add_argument("--output-bvh", required=True)
     parser.add_argument("--base-data", default="moconvq_base.data")
+<<<<<<< HEAD
+=======
+    parser.add_argument("--motion-dataset", default="")
+>>>>>>> origin/main
     parser.add_argument("--text-encoder", choices=("t5", "hash"), default="t5")
     parser.add_argument("--text-model", default="t5-large")
     parser.add_argument("--max-text-length", type=int, default=256)
@@ -371,17 +499,45 @@ def main():
     parser.add_argument("--segment-length", type=int, default=None)
     parser.add_argument("--segment-lengths", default=None)
     parser.add_argument("--allow-early-stop", action="store_true")
+<<<<<<< HEAD
     parser.add_argument("--suppress-end-token", action="store_true")
     parser.add_argument("--greedy", action="store_true")
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+=======
+    parser.add_argument("--greedy", action="store_true")
+    parser.add_argument("--top-k", type=int, default=0)
+    parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--progress-conditioning", choices=PROGRESS_CONDITIONING_CHOICES, default="auto")
+    parser.add_argument("--progress-scale", type=float, default=1.0)
+    parser.add_argument("--progress-context-size", type=int, default=None)
+    parser.add_argument("--progress-prefix-cap", type=int, default=None)
+    parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=0)
+    args = parser.parse_args()
+    if args.top_k < 0:
+        raise ValueError("--top-k must be non-negative")
+    if not 0.0 < args.top_p <= 1.0:
+        raise ValueError("--top-p must be in (0, 1]")
+    if args.temperature <= 0.0:
+        raise ValueError("--temperature must be positive")
+>>>>>>> origin/main
 
     torch.manual_seed(args.seed)
     ptu.init_gpu(True, gpu_id=args.gpu)
     from Script.stage1.real_moconvq_cache import build_loaded_moconvq_agent
 
+<<<<<<< HEAD
     agent = build_loaded_moconvq_agent(gpu=args.gpu, base_data=Path(args.base_data))
+=======
+    agent = build_loaded_moconvq_agent(
+        gpu=args.gpu,
+        base_data=Path(args.base_data),
+        motion_dataset=Path(args.motion_dataset) if args.motion_dataset else None,
+    )
+>>>>>>> origin/main
     agent.eval()
 
     model = build_text_gpt_model(gpt_config(), device=ptu.device, base_data_path=args.base_data)
@@ -413,7 +569,17 @@ def main():
             chunk_size=args.chunk_size,
             categorical=not args.greedy,
             allow_early_stop=args.allow_early_stop,
+<<<<<<< HEAD
             suppress_end_token=args.suppress_end_token,
+=======
+            top_k=args.top_k,
+            top_p=args.top_p,
+            temperature=args.temperature,
+            progress_conditioning=args.progress_conditioning,
+            progress_scale=args.progress_scale,
+            progress_context_size=args.progress_context_size,
+            progress_prefix_cap=args.progress_prefix_cap,
+>>>>>>> origin/main
         )
     else:
         segments = split_text_segments(args.text, joiner=args.segment_joiner)
@@ -437,7 +603,17 @@ def main():
             chunk_size=args.chunk_size,
             categorical=not args.greedy,
             allow_early_stop=args.allow_early_stop,
+<<<<<<< HEAD
             suppress_end_token=args.suppress_end_token,
+=======
+            top_k=args.top_k,
+            top_p=args.top_p,
+            temperature=args.temperature,
+            progress_conditioning=args.progress_conditioning,
+            progress_scale=args.progress_scale,
+            progress_context_size=args.progress_context_size,
+            progress_prefix_cap=args.progress_prefix_cap,
+>>>>>>> origin/main
         )
     dconv = agent.posterior.decoder.decode_dynamic(cur_embedding)
 

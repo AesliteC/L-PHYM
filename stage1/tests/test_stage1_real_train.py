@@ -6,6 +6,23 @@ import torch
 
 
 class Stage1RealTrainTests(unittest.TestCase):
+<<<<<<< HEAD
+=======
+    def test_direct_script_execution_prefers_own_repo_root(self):
+        import Script.stage1.train_real_text_gpt as train
+
+        expected_root = Path(train.__file__).resolve().parents[2]
+        old_path = list(train.sys.path)
+        try:
+            train.sys.path[:] = ["/tmp/other_checkout"] + [
+                path for path in old_path if Path(path or ".").resolve() != expected_root
+            ]
+            train._ensure_own_repo_root_on_path(package="")
+            self.assertEqual(Path(train.sys.path[0]).resolve(), expected_root)
+        finally:
+            train.sys.path[:] = old_path
+
+>>>>>>> origin/main
     def test_loss_and_metrics_ignore_padding_token(self):
         from Script.stage1.train_real_text_gpt import compute_loss_and_metrics
 
@@ -98,10 +115,69 @@ class Stage1RealTrainTests(unittest.TestCase):
             end_token_id=512,
         )
 
+<<<<<<< HEAD
         self.assertEqual(metrics["end_tokens"], 2)
         self.assertLess(metrics["end_loss"], 0.1)
         self.assertGreater(float(loss), metrics["ce_loss"])
 
+=======
+        self.assertEqual(metrics["end_tokens"], 1)
+        self.assertLess(metrics["end_loss"], 0.1)
+        self.assertGreater(float(loss), metrics["ce_loss"])
+
+    def test_loss_and_metrics_supervises_end_token_only_once_per_timestep(self):
+        from Script.stage1.train_real_text_gpt import compute_loss_and_metrics
+
+        logits = torch.zeros((1, 3, 4, 514), dtype=torch.float32)
+        targets = torch.tensor([[[7, 8, 9, 10], [513, 513, 513, 513], [513, 513, 513, 513]]], dtype=torch.long)
+        logits[:, :, :, 512] = 10.0
+
+        _, metrics = compute_loss_and_metrics(
+            logits,
+            targets,
+            end_token_weight=0.25,
+            end_token_id=512,
+        )
+
+        self.assertEqual(metrics["end_tokens"], 1)
+
+    def test_loss_and_metrics_can_ignore_prefix_tokens_with_target_mask(self):
+        from Script.stage1.train_real_text_gpt import compute_loss_and_metrics
+
+        logits = torch.zeros((1, 3, 1, 4), dtype=torch.float32)
+        targets = torch.tensor([[[0], [1], [2]]], dtype=torch.long)
+        logits[0, 0, 0, 3] = 10.0
+        logits[0, 1, 0, 1] = 10.0
+        logits[0, 2, 0, 2] = 10.0
+        target_mask = torch.tensor([[False, True, True]], dtype=torch.bool)
+
+        loss, metrics = compute_loss_and_metrics(logits, targets, target_mask=target_mask)
+
+        self.assertLess(float(loss), 0.01)
+        self.assertEqual(metrics["valid_tokens"], 2)
+        self.assertAlmostEqual(metrics["token_accuracy"], 1.0)
+
+    def test_loss_and_metrics_end_token_uses_first_padding_after_target_region(self):
+        from Script.stage1.train_real_text_gpt import compute_loss_and_metrics
+
+        logits = torch.zeros((1, 4, 1, 514), dtype=torch.float32)
+        targets = torch.tensor([[[7], [8], [513], [513]]], dtype=torch.long)
+        target_mask = torch.tensor([[False, True, False, False]], dtype=torch.bool)
+        logits[0, 2, 0, 512] = 10.0
+
+        loss, metrics = compute_loss_and_metrics(
+            logits,
+            targets,
+            target_mask=target_mask,
+            end_token_weight=0.5,
+        )
+
+        self.assertEqual(metrics["valid_tokens"], 1)
+        self.assertEqual(metrics["end_tokens"], 1)
+        self.assertLess(metrics["end_loss"], 0.1)
+        self.assertGreater(float(loss), 0.0)
+
+>>>>>>> origin/main
     def test_real_cache_dataset_loads_expected_fields(self):
         from Script.stage1.train_real_text_gpt import RealStage1CacheDataset
 
@@ -128,6 +204,60 @@ class Stage1RealTrainTests(unittest.TestCase):
             self.assertEqual(item["indices"].shape, (5, 4))
             self.assertEqual(item["text_feature"].shape, (8, 1024))
             self.assertEqual(item["caption"], "walk")
+<<<<<<< HEAD
+=======
+            self.assertEqual(item["target_mask"].shape, (5,))
+            self.assertEqual(item["end_mask"].shape, (5,))
+            self.assertEqual(int(item["segment_idx"]), 0)
+            self.assertEqual(int(item["num_segments"]), 1)
+            self.assertEqual(float(item["segment_progress"]), 0.0)
+
+    def test_real_cache_dataset_infers_end_mask_for_legacy_cache(self):
+        from Script.stage1.train_real_text_gpt import RealStage1CacheDataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "cache.pt"
+            torch.save(
+                {
+                    "latents": torch.zeros((1, 5, 768), dtype=torch.float32),
+                    "indices": torch.tensor([[[1, 1, 1, 1], [2, 2, 2, 2], [513, 513, 513, 513], [513, 513, 513, 513], [513, 513, 513, 513]]]),
+                    "text_features": torch.zeros((1, 8, 1024), dtype=torch.float32),
+                    "text_masks": torch.ones((1, 8), dtype=torch.bool),
+                    "target_masks": torch.tensor([[True, True, False, False, False]], dtype=torch.bool),
+                    "captions": ["walk"],
+                    "sequence_ids": ["seq"],
+                    "window_ranges": [(0, 2)],
+                    "sample_ids": [["000001"]],
+                    "config": {},
+                },
+                path,
+            )
+
+            item = RealStage1CacheDataset(str(path))[0]
+
+            self.assertTrue(torch.equal(item["end_mask"], torch.tensor([False, False, True, False, False])))
+
+    def test_loss_and_metrics_respects_explicit_end_mask(self):
+        from Script.stage1.train_real_text_gpt import compute_loss_and_metrics
+
+        logits = torch.zeros((1, 4, 1, 514), dtype=torch.float32)
+        targets = torch.tensor([[[7], [8], [513], [513]]], dtype=torch.long)
+        target_mask = torch.tensor([[False, True, False, False]], dtype=torch.bool)
+        end_mask = torch.tensor([[False, False, False, True]], dtype=torch.bool)
+        logits[0, 2, 0, 512] = 10.0
+        logits[0, 3, 0, 512] = 10.0
+
+        _, metrics = compute_loss_and_metrics(
+            logits,
+            targets,
+            target_mask=target_mask,
+            end_mask=end_mask,
+            end_token_weight=0.5,
+        )
+
+        self.assertEqual(metrics["end_tokens"], 1)
+        self.assertLess(metrics["end_loss"], 0.1)
+>>>>>>> origin/main
 
     def test_prepare_autoregressive_inputs_uses_only_previous_latents(self):
         from Script.stage1.train_real_text_gpt import prepare_autoregressive_inputs
@@ -210,6 +340,153 @@ class Stage1RealTrainTests(unittest.TestCase):
         self.assertTrue(any(param.requires_grad for param in model.trans_head.parameters()))
         self.assertFalse(any(param.requires_grad for param in model.linear.parameters()))
 
+<<<<<<< HEAD
+=======
+    def test_configure_trainable_scope_can_train_progress_condition_entry(self):
+        import torch.nn as nn
+
+        from Script.stage1.train_real_text_gpt import configure_trainable_scope
+
+        class FakeModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.trans_temporal = nn.Linear(2, 2)
+                self.trans_base = nn.Linear(2, 2)
+                self.trans_head = nn.Linear(2, 2)
+                self.linear = nn.Linear(2, 2)
+
+        model = FakeModel()
+        count = configure_trainable_scope(model, "temporal_base_head")
+
+        self.assertGreater(count, 0)
+        self.assertTrue(any(param.requires_grad for param in model.trans_temporal.parameters()))
+        self.assertTrue(any(param.requires_grad for param in model.trans_base.parameters()))
+        self.assertTrue(any(param.requires_grad for param in model.trans_head.parameters()))
+        self.assertTrue(any(param.requires_grad for param in model.linear.parameters()))
+
+    def test_validate_output_dir_rejects_nonempty_clean_run(self):
+        from Script.stage1.train_real_text_gpt import validate_output_dir_for_training
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            (output_dir / "train_log.jsonl").write_text('{"epoch": 0, "val": {"loss": 1.0}}\n', encoding="utf-8")
+
+            with self.assertRaises(FileExistsError):
+                validate_output_dir_for_training(output_dir, append_log=False)
+
+            validate_output_dir_for_training(output_dir, append_log=True, start_epoch=1)
+
+    def test_append_log_requires_next_epoch_after_existing_log(self):
+        from Script.stage1.train_real_text_gpt import validate_output_dir_for_training
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            (output_dir / "train_log.jsonl").write_text(
+                '{"epoch": 0, "val": {"loss": 3.0}}\n{"epoch": 1, "val": {"loss": 2.0}}\n',
+                encoding="utf-8",
+            )
+
+            validate_output_dir_for_training(output_dir, append_log=True, start_epoch=2)
+            with self.assertRaises(ValueError):
+                validate_output_dir_for_training(output_dir, append_log=True, start_epoch=1)
+
+    def test_append_log_rejects_duplicate_existing_epochs(self):
+        from Script.stage1.train_real_text_gpt import validate_output_dir_for_training
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            (output_dir / "train_log.jsonl").write_text(
+                '{"epoch": 0, "val": {"loss": 3.0}}\n{"epoch": 0, "val": {"loss": 2.0}}\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ValueError):
+                validate_output_dir_for_training(output_dir, append_log=True, start_epoch=1)
+
+    def test_read_training_log_state_tracks_best_val_loss(self):
+        from Script.stage1.train_real_text_gpt import read_training_log_state
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "train_log.jsonl"
+            log_path.write_text(
+                '{"epoch": 0, "val": {"loss": 3.0}}\n'
+                '{"epoch": 1, "val": {"loss": 2.5}}\n'
+                '{"epoch": 2, "val": {"loss": 2.75}}\n',
+                encoding="utf-8",
+            )
+
+            state = read_training_log_state(log_path)
+
+            self.assertEqual(state["epochs"], [0, 1, 2])
+            self.assertEqual(state["last_epoch"], 2)
+            self.assertAlmostEqual(state["best_val_loss"], 2.5)
+
+    def test_training_run_lock_rejects_concurrent_writer(self):
+        from Script.stage1.train_real_text_gpt import training_run_lock
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            with training_run_lock(output_dir, metadata={"test": True}):
+                self.assertTrue((output_dir / ".train.lock").exists())
+                with self.assertRaises(RuntimeError):
+                    with training_run_lock(output_dir):
+                        pass
+            self.assertFalse((output_dir / ".train.lock").exists())
+
+    def test_teacher_kl_uses_progress_free_condition_by_default(self):
+        import torch.nn as nn
+        from torch.utils.data import DataLoader
+
+        from Script.stage1.train_real_text_gpt import _run_epoch
+
+        class RecordingModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embedding = [torch.zeros((514, 768), dtype=torch.float32)]
+                self.seen_clip_features = []
+
+            def forward(self, latents, idxs, clip_feature, text_feature, text_mask):
+                self.seen_clip_features.append(clip_feature.detach().cpu().clone())
+                logits = torch.zeros((*idxs.shape, 514), dtype=torch.float32, device=idxs.device)
+                logits[..., 0] = 10.0
+                return logits, latents
+
+        sample = {
+            "latent": torch.zeros((3, 768), dtype=torch.float32),
+            "indices": torch.zeros((3, 1), dtype=torch.long),
+            "text_feature": torch.zeros((8, 1024), dtype=torch.float32),
+            "text_mask": torch.zeros((8,), dtype=torch.bool),
+            "target_mask": torch.ones((3,), dtype=torch.bool),
+            "end_mask": torch.zeros((3,), dtype=torch.bool),
+            "segment_idx": torch.tensor(1, dtype=torch.long),
+            "num_segments": torch.tensor(3, dtype=torch.long),
+            "segment_progress": torch.tensor(0.5, dtype=torch.float32),
+            "prefix_length": torch.tensor(2, dtype=torch.long),
+            "has_segment_metadata": torch.tensor(True, dtype=torch.bool),
+        }
+        student = RecordingModel()
+        teacher = RecordingModel()
+
+        metrics = _run_epoch(
+            student,
+            DataLoader([sample], batch_size=1),
+            optimizer=None,
+            device=torch.device("cpu"),
+            train=False,
+            teacher_model=teacher,
+            kl_weight=0.1,
+            progress_conditioning="scalar",
+            teacher_progress_conditioning="none",
+            context_size=10,
+        )
+
+        self.assertGreater(metrics["valid_tokens"], 0)
+        self.assertEqual(len(student.seen_clip_features), 1)
+        self.assertEqual(len(teacher.seen_clip_features), 1)
+        self.assertGreater(float(student.seen_clip_features[0].abs().sum()), 0.0)
+        self.assertEqual(float(teacher.seen_clip_features[0].abs().sum()), 0.0)
+
+>>>>>>> origin/main
 
 if __name__ == "__main__":
     unittest.main()

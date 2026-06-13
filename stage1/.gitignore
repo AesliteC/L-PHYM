@@ -10,6 +10,14 @@ out/
 build
 stage1_artifacts/
 AGENT.md
+<<<<<<< HEAD:stage1/.gitignore
+=======
+AGENTS.md
+CODEX.md
+CLAUDE.md
+.codex/
+.claude/
+>>>>>>> origin/main:.gitignore
 
 *.h5
 *.pth

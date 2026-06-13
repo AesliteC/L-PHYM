@@ -10,6 +10,12 @@ import h5py
 import numpy as np
 
 from Script.stage1.real_moconvq_cache import (
+<<<<<<< HEAD
+=======
+    DEFAULT_MOCONVQ_WORLD_JSON,
+    ROTATION_CALIBRATION_CHOICES,
+    ROTATION_SOURCE_CHOICES,
+>>>>>>> origin/main
     humanml3d_joints_to_moconvq_state,
     load_manifest,
     moconvq_state_to_observation,
@@ -21,6 +27,12 @@ def convert_long_h5_to_moconvq_observation(
     manifest_path: Path,
     output_h5_path: Path,
     fps: int = 20,
+<<<<<<< HEAD
+=======
+    rotation_source: str = "heuristic",
+    rotation_calibration: str = "rest",
+    world_json_path: Path | str | None = None,
+>>>>>>> origin/main
 ) -> dict[str, object]:
     manifest = load_manifest(manifest_path)
     output_h5_path.parent.mkdir(parents=True, exist_ok=True)
@@ -34,7 +46,19 @@ def convert_long_h5_to_moconvq_observation(
                 row = manifest.get(sequence_id, {})
                 source_group = source[sequence_id]
                 joints = source_group["joints_22"][:]
+<<<<<<< HEAD
                 state = humanml3d_joints_to_moconvq_state(joints, fps=fps)
+=======
+                joint_vecs = source_group["joint_vecs_263"][:] if "joint_vecs_263" in source_group else None
+                state = humanml3d_joints_to_moconvq_state(
+                    joints,
+                    joint_vecs_263=joint_vecs,
+                    fps=fps,
+                    rotation_source=rotation_source,
+                    rotation_calibration=rotation_calibration,
+                    world_json_path=world_json_path,
+                )
+>>>>>>> origin/main
                 observation = moconvq_state_to_observation(state)
 
                 group = target.create_group(sequence_id)
@@ -70,6 +94,12 @@ def convert_long_h5_to_moconvq_observation(
             "long_h5": str(long_h5_path),
             "manifest": str(manifest_path),
             "fps": fps,
+<<<<<<< HEAD
+=======
+            "rotation_source": rotation_source,
+            "rotation_calibration": rotation_calibration,
+            "world_json": str(world_json_path) if world_json_path is not None else str(DEFAULT_MOCONVQ_WORLD_JSON),
+>>>>>>> origin/main
         },
     }
 
@@ -79,6 +109,12 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--long-h5", required=True)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--fps", type=int, default=20)
+<<<<<<< HEAD
+=======
+    parser.add_argument("--rotation-source", choices=ROTATION_SOURCE_CHOICES, default="heuristic")
+    parser.add_argument("--rotation-calibration", choices=ROTATION_CALIBRATION_CHOICES, default="rest")
+    parser.add_argument("--world-json", default=str(DEFAULT_MOCONVQ_WORLD_JSON))
+>>>>>>> origin/main
     parser.add_argument("--output-h5", required=True)
     parser.add_argument("--summary", default="")
     args = parser.parse_args(argv)
@@ -88,6 +124,12 @@ def main(argv: Iterable[str] | None = None) -> None:
         manifest_path=Path(args.manifest),
         output_h5_path=Path(args.output_h5),
         fps=args.fps,
+<<<<<<< HEAD
+=======
+        rotation_source=args.rotation_source,
+        rotation_calibration=args.rotation_calibration,
+        world_json_path=Path(args.world_json),
+>>>>>>> origin/main
     )
     if args.summary:
         summary_path = Path(args.summary)

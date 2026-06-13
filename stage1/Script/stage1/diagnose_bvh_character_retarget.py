@@ -1,0 +1,267 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Iterable
+import argparse
+import glob
+import json
+import sys
+
+
+def _ensure_own_repo_root_on_path(package: str | None = __package__) -> None:
+    if package not in {None, ""}:
+        return
+    repo_root = str(Path(__file__).resolve().parents[2])
+    if not sys.path or sys.path[0] != repo_root:
+        sys.path.insert(0, repo_root)
+
+
+_ensure_own_repo_root_on_path()
+
+import h5py
+import numpy as np
+import torch
+
+from Script.stage1.diagnose_observation_distribution import _summarize_abs_z
+from Script.stage1.diagnose_token_distribution import (
+    compact_stats,
+    compare_distributions,
+    token_distribution_stats,
+)
+from Script.stage1.real_moconvq_cache import (
+    _indices_to_time_depth,
+    build_loaded_moconvq_agent,
+)
+
+
+def collect_bvh_files(paths: list[str]) -> list[Path]:
+    files: list[Path] = []
+    for raw in paths:
+        path = Path(raw)
+        if path.is_dir():
+            files.extend(sorted(path.glob("*.bvh")))
+        else:
+            matches = [Path(item) for item in sorted(glob.glob(raw))]
+            files.extend(matches if matches else [path])
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for path in files:
+        resolved = path.resolve()
+        if resolved not in seen:
+            unique.append(path)
+            seen.add(resolved)
+    return unique
+
+
+def extract_bvh_with_moconvq_character(
+    bvh_files: list[Path],
+    agent,
+    fps: int = 20,
+    flip: bool = False,
+) -> dict[str, np.ndarray]:
+    """Use MoConVQ's original BVH-to-character path to obtain state/observation."""
+
+    from MoConVQCore.Utils.motion_dataset import MotionDataSet
+
+    motion_data = MotionDataSet(fps)
+    for bvh_file in bvh_files:
+        motion_data.add_bvh_with_character(str(bvh_file), agent.env.sim_character, flip=flip)
+    if motion_data.observation is None or motion_data.state is None:
+        raise ValueError("MoConVQ MotionDataSet did not produce state/observation")
+    return {
+        "state": np.asarray(motion_data.state, dtype=np.float32),
+        "observation": np.asarray(motion_data.observation, dtype=np.float32),
+        "done": np.asarray(motion_data.done),
+    }
+
+
+def summarize_observation_against_agent(agent, observation: np.ndarray) -> dict[str, object]:
+    obs_mean = agent.obs_mean.detach().cpu().numpy().astype(np.float32)
+    obs_std = agent.obs_std.detach().cpu().numpy().astype(np.float32)
+    if observation.ndim != 2 or observation.shape[-1] != obs_mean.shape[0]:
+        raise ValueError(
+            "observation shape does not match MoConVQ statistics: "
+            f"observation={observation.shape}, obs_mean={obs_mean.shape}"
+        )
+    abs_z = np.abs((observation.astype(np.float32) - obs_mean) / (obs_std + 1e-8))
+    dim_p99 = np.percentile(abs_z, 99, axis=0)
+    worst_dims = np.argsort(dim_p99)[-10:][::-1]
+    return {
+        "aggregate_abs_z": _summarize_abs_z(abs_z),
+        "worst_dimensions_by_p99_abs_z": [
+            {
+                "dim": int(dim),
+                "p99_abs_z": float(dim_p99[dim]),
+                "mean": float(obs_mean[dim]),
+                "std": float(obs_std[dim]),
+            }
+            for dim in worst_dims
+        ],
+    }
+
+
+def encode_observation_indices(agent, observation: np.ndarray, rvq_depth: int = 4) -> torch.Tensor:
+    with torch.no_grad():
+        info = agent.encode_seq_all(None, observation)
+    return torch.as_tensor(_indices_to_time_depth(info["indexs"], rvq_depth=rvq_depth), dtype=torch.long)
+
+
+def summarize_native_observation_tokens(
+    native_h5: Path,
+    observation_key: str,
+    agent,
+    rvq_depth: int = 4,
+) -> dict[str, object]:
+    with h5py.File(native_h5, "r") as handle:
+        observation = np.asarray(handle[observation_key], dtype=np.float32)
+    indices = encode_observation_indices(agent, observation, rvq_depth=rvq_depth)
+    return {
+        "kind": "native_h5",
+        "path": str(native_h5),
+        "observation_key": observation_key,
+        "observation_shape": list(observation.shape),
+        "shape": list(indices.shape),
+        "stats": token_distribution_stats(indices),
+    }
+
+
+def diagnose_bvh_character_retarget(
+    bvh_files: list[Path],
+    agent,
+    fps: int = 20,
+    rvq_depth: int = 4,
+    flip: bool = False,
+    native_h5: Path | None = None,
+    native_observation_key: str = "walk1_subject5/observation",
+    per_file: bool = False,
+) -> dict[str, object]:
+    motion = extract_bvh_with_moconvq_character(bvh_files, agent=agent, fps=fps, flip=flip)
+    observation = motion["observation"]
+    indices = encode_observation_indices(agent, observation, rvq_depth=rvq_depth)
+    bvh_summary = {
+        "kind": "bvh_character",
+        "paths": [str(path) for path in bvh_files],
+        "fps": fps,
+        "flip": flip,
+        "state_shape": list(motion["state"].shape),
+        "observation_shape": list(observation.shape),
+        "shape": list(indices.shape),
+        "observation_z": summarize_observation_against_agent(agent, observation),
+        "stats": token_distribution_stats(indices),
+    }
+
+    summaries: list[dict[str, object]] = [bvh_summary]
+    comparisons: list[dict[str, object]] = []
+    per_file_summaries: list[dict[str, object]] = []
+    if per_file:
+        for bvh_file in bvh_files:
+            single_motion = extract_bvh_with_moconvq_character([bvh_file], agent=agent, fps=fps, flip=flip)
+            single_observation = single_motion["observation"]
+            single_indices = encode_observation_indices(agent, single_observation, rvq_depth=rvq_depth)
+            per_file_summaries.append(
+                {
+                    "path": str(bvh_file),
+                    "state_shape": list(single_motion["state"].shape),
+                    "observation_shape": list(single_observation.shape),
+                    "shape": list(single_indices.shape),
+                    "observation_z": summarize_observation_against_agent(agent, single_observation),
+                    "stats": token_distribution_stats(single_indices),
+                }
+            )
+    if native_h5 is not None:
+        native_summary = summarize_native_observation_tokens(
+            native_h5,
+            observation_key=native_observation_key,
+            agent=agent,
+            rvq_depth=rvq_depth,
+        )
+        summaries.append(native_summary)
+        comparisons.append(
+            {
+                "left": "bvh_character",
+                "right": str(native_h5),
+                "by_depth": compare_distributions(bvh_summary, native_summary),
+            }
+        )
+
+    return {
+        "summaries": summaries,
+        "comparisons": comparisons,
+        "per_file": per_file_summaries,
+    }
+
+
+def _compact_payload(payload: dict[str, object]) -> dict[str, object]:
+    compact = dict(payload)
+    compact["summaries"] = [compact_stats(summary) for summary in payload["summaries"]]  # type: ignore[index]
+    compact["per_file"] = [
+        compact_stats(summary)
+        for summary in payload.get("per_file", [])  # type: ignore[arg-type]
+    ]
+    return compact
+
+
+def main(argv: Iterable[str] | None = None) -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("bvh_files", nargs="+")
+    parser.add_argument("--base-data", default="moconvq_base.data")
+    parser.add_argument("--motion-dataset", default="")
+    parser.add_argument("--gpu", type=int, default=0)
+    parser.add_argument("--fps", type=int, default=20)
+    parser.add_argument("--rvq-depth", type=int, default=4)
+    parser.add_argument("--flip", action="store_true")
+    parser.add_argument("--per-file", action="store_true", help="Also diagnose each BVH independently for filtering.")
+    parser.add_argument("--native-h5", default="")
+    parser.add_argument("--native-observation-key", default="walk1_subject5/observation")
+    parser.add_argument("--output-json", default="")
+    parser.add_argument("--quiet", action="store_true", help="Print only a compact run summary to stdout.")
+    args = parser.parse_args(argv)
+
+    agent = build_loaded_moconvq_agent(
+        gpu=args.gpu,
+        base_data=Path(args.base_data),
+        motion_dataset=Path(args.motion_dataset) if args.motion_dataset else None,
+    )
+    agent.eval()
+    bvh_files = collect_bvh_files(args.bvh_files)
+    if not bvh_files:
+        raise SystemExit("no BVH files matched the provided inputs")
+    payload = diagnose_bvh_character_retarget(
+        bvh_files,
+        agent=agent,
+        fps=args.fps,
+        rvq_depth=args.rvq_depth,
+        flip=args.flip,
+        native_h5=Path(args.native_h5) if args.native_h5 else None,
+        native_observation_key=args.native_observation_key,
+        per_file=args.per_file,
+    )
+    if args.output_json:
+        output = Path(args.output_json)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    if args.quiet:
+        summary = payload["summaries"][0]  # type: ignore[index]
+        z = summary.get("observation_z", {}).get("aggregate_abs_z", {})  # type: ignore[union-attr]
+        print(
+            json.dumps(
+                {
+                    "output_json": args.output_json,
+                    "paths": len(bvh_files),
+                    "state_shape": summary.get("state_shape"),
+                    "observation_shape": summary.get("observation_shape"),
+                    "token_shape": summary.get("shape"),
+                    "p99_abs_z": z.get("p99"),
+                    "max_abs_z": z.get("max"),
+                    "per_file": len(payload.get("per_file", [])),  # type: ignore[arg-type]
+                    "comparisons": len(payload.get("comparisons", [])),  # type: ignore[arg-type]
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(json.dumps(_compact_payload(payload), indent=2))
+
+
+if __name__ == "__main__":
+    main()

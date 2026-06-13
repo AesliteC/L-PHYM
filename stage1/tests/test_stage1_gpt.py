@@ -112,6 +112,24 @@ class Stage1GPTTests(unittest.TestCase):
         self.assertEqual(latents.shape, (1, 1, 768))
         self.assertEqual(indices.shape[-1], 1)
 
+<<<<<<< HEAD
+=======
+    def test_top_p_filtering_keeps_minimal_nucleus_and_respects_top_k(self):
+        from MoConVQCore.Model.cross_trans_ori_fixsum import top_k_top_p_filtering
+
+        logits = torch.log(torch.tensor([[0.40, 0.30, 0.20, 0.10]], dtype=torch.float32))
+        filtered = top_k_top_p_filtering(logits.clone(), top_k=0, top_p=0.65)
+
+        self.assertTrue(torch.isfinite(filtered[0, 0]))
+        self.assertTrue(torch.isfinite(filtered[0, 1]))
+        self.assertTrue(torch.isneginf(filtered[0, 2]))
+        self.assertTrue(torch.isneginf(filtered[0, 3]))
+
+        filtered_top_k = top_k_top_p_filtering(logits.clone(), top_k=1, top_p=1.0)
+        self.assertTrue(torch.isfinite(filtered_top_k[0, 0]))
+        self.assertTrue(torch.isneginf(filtered_top_k[0, 1]))
+
+>>>>>>> origin/main
 
 if __name__ == "__main__":
     unittest.main()
