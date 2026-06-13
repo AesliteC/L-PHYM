@@ -8621,3 +8621,212 @@ Interpretation:
 - The result strongly suggests the main problem after fixing data mapping and
   prompt segmentation was insufficient fine-tune capacity in the head-only
   model, not abandonment of HumanML3D synthesis.
+
+## 2026-06-14: Reproducible strict-prompt export and Val18 replication
+
+### Purpose
+
+The earlier strict Val8 prompt TSV was reconstructed during analysis.  To make
+the protocol reproducible and avoid hidden hand editing, I added a cache-to-TSV
+exporter that rebuilds explicit segment prompts directly from the segment-prefix
+cache metadata:
+
+```text
+sequence_ids + captions + segment_idxs + num_segments + segment_ranges
+  -> one prompt per long sequence
+  -> long_text
+  -> segments_json
+  -> scaled segment lengths
+```
+
+This also lets the full 18-sequence validation split be evaluated with the same
+training/inference alignment: HumanML3D clip captions are passed explicitly, and
+the total generation budget is distributed by the original segment lengths
+instead of naive `" then "` splitting.
+
+### Code changes
+
+- Added `Script/stage1/export_cache_prompt_tsv.py`.
+  - Reads a segment-prefix GPT cache.
+  - Deduplicates multiple windows from the same segment.
+  - Restores the true HumanML3D clip-caption ordering.
+  - Scales raw segment ranges to a fixed total generation token budget while
+    preserving positive segment lengths and exact total length.
+  - Writes the 4-column prompt TSV accepted by `run_stage1_model_suite.py`.
+- Added `tests/test_stage1_cache_prompt_export.py`.
+  - Covers proportional length scaling.
+  - Covers deduplication when several cache windows come from the same segment.
+  - Covers CLI output and TSV parsing.
+
+One important scaling detail: leftover tokens are assigned by descending
+fractional remainder.  This preserves the previous manual Val8 example:
+
+```text
+raw [50, 49, 44, 24] -> scaled [22, 22, 20, 11]
+```
+
+### Prompt export
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/export_cache_prompt_tsv.py \
+  --cache /tmp/stage1_segment_aligned_bvh_native_200_20260614/val_cache.pt \
+  --output /tmp/stage1_segment_aligned_val18_explicit_segments_scaled75_prompts.tsv \
+  --summary /tmp/stage1_segment_aligned_val18_explicit_segments_scaled75_prompts_summary.json \
+  --total-length 75
+```
+
+Result:
+
+```text
+num_prompts = 18
+output = /tmp/stage1_segment_aligned_val18_explicit_segments_scaled75_prompts.tsv
+summary = /tmp/stage1_segment_aligned_val18_explicit_segments_scaled75_prompts_summary.json
+```
+
+### Val18 strict comparison
+
+Generation command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/run_stage1_model_suite.py \
+  --run-id segment_aligned_native200_basehead_epoch3_val18_explicit_scaled75_20260614 \
+  --suite-dir /tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val18_explicit_scaled75_compare_20260614 \
+  --prompts /tmp/stage1_segment_aligned_val18_explicit_segments_scaled75_prompts.tsv \
+  --baseline-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --finetuned-checkpoint /tmp/stage1_segment_aligned_bvh_native_200_basehead_seed13_3ep_20260614/checkpoint_epoch_3.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-encoder t5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --max-text-length 256 \
+  --max-length 75 \
+  --generation-mode auto \
+  --segment-joiner " then " \
+  --context-size 30 \
+  --chunk-size 20 \
+  --top-k 0 \
+  --top-p 0.95 \
+  --temperature 1.0 \
+  --progress-conditioning auto \
+  --baseline-progress-conditioning none \
+  --progress-scale 0.5 \
+  --progress-context-size 51 \
+  --progress-prefix-cap 25 \
+  --seed 123 \
+  --gpu 0 \
+  --expected-min-frames 1200 \
+  --skip-backup
+```
+
+Artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val18_explicit_scaled75_compare_20260614/suite_summary.json
+/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val18_explicit_scaled75_compare_20260614/summary_metrics.json
+/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val18_explicit_scaled75_compare_20260614/contact_sheet.png
+```
+
+Engineering metrics:
+
+| Metric | Baseline | Base-head epoch3 |
+| --- | ---: | ---: |
+| samples | 18 | 18 |
+| avg frames | 1292 | 1304 |
+| avg duration sec | 10.7662 | 10.8662 |
+| early-stop rate | 0.2778 | 0.2778 |
+| root path | 2.6053 | 2.7979 |
+| root displacement | 0.8678 | 1.0033 |
+| pose velocity mean | 27.3341 | 28.3525 |
+| pose variance mean | 339.6971 | 356.8311 |
+| lag20 repeat fraction | 0.0075 | 0.0063 |
+
+Interpretation:
+
+- Finetuned is slightly longer on average and covers more root path/displacement.
+- Early-stop rate is tied.
+- Lag20 repetition improves slightly.
+- Pose velocity/variance are higher, so the motion is more energetic but also
+  carries a risk of rougher poses.
+
+### Val18 approximate T2M metrics
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/evaluate_t2m_paper_metrics.py \
+  /tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val18_explicit_scaled75_compare_20260614/bvh/*.bvh \
+  --prompts /tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val18_explicit_scaled75_compare_20260614/prompts.tsv \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --evaluator-root /tmp/stage1_t2m_evaluator_assets \
+  --output-dir /tmp/stage1_t2m_paper_metrics_segment_aligned_basehead_epoch3_val18_explicit_scaled75_20260614 \
+  --summary /tmp/stage1_t2m_paper_metrics_segment_aligned_basehead_epoch3_val18_explicit_scaled75_20260614/summary.json \
+  --gpu 0
+```
+
+Approximate T2M evaluator metrics:
+
+| Metric | Baseline | Base-head epoch3 |
+| --- | ---: | ---: |
+| samples | 18 | 18 |
+| FID lower is better | 13.7255 | 12.6332 |
+| R-precision@1 higher is better | 0.2222 | 0.2778 |
+| R-precision@2 higher is better | 0.4444 | 0.2778 |
+| R-precision@3 higher is better | 0.4444 | 0.4444 |
+| matching score lower is better | 4.8802 | 4.6093 |
+
+Interpretation:
+
+- This larger Val18 check confirms the main positive signals from Val8 for FID,
+  R@1 and matching score.
+- It does not confirm the Val8 R@2/R@3 gains: R@2 drops and R@3 ties baseline.
+- Therefore Val18 should be reported as a mixed but still useful replication,
+  not as a full paper-metric sweep.
+- Metrics are still approximate because generated MoConVQ BVHs are converted by
+  the MoConVQ/base.bvh -> HumanML3D 22-joint adapter, and the T2M evaluator
+  truncates long sequences to `max_motion_length=196` frames at 20 FPS.
+
+### Visual audit
+
+Generated contact sheet:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/make_bvh_contact_sheet.py \
+  /tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val18_explicit_scaled75_compare_20260614/bvh/*.bvh \
+  --frames-per-motion 8 \
+  --cell-width 220 \
+  --cell-height 180 \
+  --label-width 360 \
+  --output /tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val18_explicit_scaled75_compare_20260614/contact_sheet.png
+```
+
+Result:
+
+```text
+rows = 36
+frames_per_motion = 8
+```
+
+Manual inspection:
+
+- No blank frames, whole-body inversion, or explosive poses were visible.
+- Fine-tuned rows generally show slightly larger root/path coverage.
+- Several crouch/crawl/low-posture prompts preserve the low-pose family without
+  immediate collapse.
+- Some poses remain awkward and semantic details are not consistently correct.
+
+Overall Val18 conclusion:
+
+```text
+The reproducible strict-prompt Val18 run supports a partial Stage1 improvement:
+finetuned beats baseline on approximate FID, R@1, matching score, average length,
+root path/displacement, and lag20 repetition, while R@2 regresses and R@3 /
+early-stop tie.  This is enough for a cautious "better than baseline on key
+metrics" claim, but not enough to claim the long-horizon text-to-motion problem
+is solved.
+```

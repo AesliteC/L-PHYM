@@ -169,6 +169,53 @@ base_head artifacts:
 /tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val8_explicit_scaled75_compare_20260614/video/train_000077__baseline_vs_basehead.mp4
 ```
 
+为了避免 Val8 prompt TSV 依赖手工重建，新增了可复现导出脚本：
+
+```bash
+python Script/stage1/export_cache_prompt_tsv.py \
+  --cache /tmp/stage1_segment_aligned_bvh_native_200_20260614/val_cache.pt \
+  --output /tmp/stage1_segment_aligned_val18_explicit_segments_scaled75_prompts.tsv \
+  --summary /tmp/stage1_segment_aligned_val18_explicit_segments_scaled75_prompts_summary.json \
+  --total-length 75
+```
+
+该脚本直接从 segment-prefix cache 的 `captions`、`segment_ranges`、`segment_idxs`
+和 `num_segments` 还原每条长序列的真实 clip caption 边界，并按原始 segment
+长度比例缩放到给定 token budget。它输出 4 列 TSV：
+
+```text
+name<TAB>long_text<TAB>segments_json<TAB>scaled_lengths_json
+```
+
+用这个 TSV 对完整 18 条 held-out validation sequence 做 Val18 严格协议复现：
+
+| metric | baseline | base_head epoch3 |
+| --- | ---: | ---: |
+| avg frames | 1292 | 1304 |
+| early-stop rate | 0.2778 | 0.2778 |
+| root path | 2.6053 | 2.7979 |
+| root displacement | 0.8678 | 1.0033 |
+| pose velocity / variance | 27.334 / 339.697 | 28.353 / 356.831 |
+| lag20 repeat fraction | 0.0075 | 0.0063 |
+| approximate FID lower is better | 13.7255 | 12.6332 |
+| approximate R@1/R@2/R@3 higher is better | 0.222 / 0.444 / 0.444 | 0.278 / 0.278 / 0.444 |
+| approximate matching score lower is better | 4.8802 | 4.6093 |
+
+Val18 artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val18_explicit_scaled75_compare_20260614
+/tmp/stage1_t2m_paper_metrics_segment_aligned_basehead_epoch3_val18_explicit_scaled75_20260614/summary.json
+/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val18_explicit_scaled75_compare_20260614/contact_sheet.png
+```
+
+Val18 结论更混合但仍支持主结论：finetuned 在 approximate FID、R@1、
+matching score、平均长度、root path、root displacement 和 lag20 重复率上优于
+baseline；R@2 下降，R@3 与 early-stop 持平，pose energy 略高。contact sheet
+未见空帧、整体倒置或爆炸，部分 crouch/crawl 样例保持了低姿态，但仍有姿态怪异
+和语义细节不稳定的失败模式。最终报告中可把 Val8 作为 strict protocol 主正结果，
+Val18 作为更大样本复现和局限性说明。
+
 旧 head-only scaled75 诊断：
 
 | metric | baseline | finetuned epoch3 |
@@ -1413,6 +1460,6 @@ stage1_artifacts/checkpoints/fixed_dataset_stage1_20260529_135401/best_val.pth
 
 Stage1 的旧 fixed dataset 工程链路已经完整跑通，但旧 finetuned checkpoint 已判定无效：它改善了早停，却因训练/推理 latent 空间不一致、全量微调覆盖先验、以及 HumanML3D retarget/cache 质量不足导致视频质量差。当前代码已修复训练上下文 latent 重建，并把 HumanML3D 主线推进到 `long_sequences.h5` -> `joints_ik` BVH export -> MoConVQ-native character retarget -> per-file quality filter -> deterministic accepted train/val split -> accepted-only GPT cache。
 
-当前推荐的 Stage1 engineering/metric 结果是 2026-06-14 artifact label 的 segment-aligned native-retarget run：73 train / 18 val long sequences 形成 476 train windows 和 117 val windows。head-only 5 epoch 训练能让 loss 下降并在 plain-`" then "` protocol 下取得 partial improvement，但严格按 HumanML3D clip boundary 推理时仍暴露出容量不足。新的 `base_head` 3 epoch 微调把 val loss 从 `14.912 -> 10.731`，并在 explicit segment + scaled segment lengths 的 Held-out Val8 上取得当前最好严格协议结果：平均长度 `1182 -> 1197`，早停率持平 `0.50`，root path `1.682 -> 2.074`，approximate FID `20.279 -> 14.985`，R-precision@1 持平 `0.375`，R-precision@2 `0.500 -> 0.750`，R-precision@3 `0.625 -> 0.875`，matching score `4.813 -> 4.384`。contact sheet 未见空帧、整体倒置或爆炸，`train_000057` 和 `train_000077` 已生成 side-by-side MP4。
+当前推荐的 Stage1 engineering/metric 结果是 2026-06-14 artifact label 的 segment-aligned native-retarget run：73 train / 18 val long sequences 形成 476 train windows 和 117 val windows。head-only 5 epoch 训练能让 loss 下降并在 plain-`" then "` protocol 下取得 partial improvement，但严格按 HumanML3D clip boundary 推理时仍暴露出容量不足。新的 `base_head` 3 epoch 微调把 val loss 从 `14.912 -> 10.731`，并在 explicit segment + scaled segment lengths 的 Held-out Val8 上取得当前最好严格协议结果：平均长度 `1182 -> 1197`，早停率持平 `0.50`，root path `1.682 -> 2.074`，approximate FID `20.279 -> 14.985`，R-precision@1 持平 `0.375`，R-precision@2 `0.500 -> 0.750`，R-precision@3 `0.625 -> 0.875`，matching score `4.813 -> 4.384`。完整 Val18 strict prompt 复现中，finetuned 的 approximate FID `13.726 -> 12.633`、R@1 `0.222 -> 0.278`、matching score `4.880 -> 4.609`、平均长度和 root path 继续优于 baseline，但 R@2 下降、R@3 和早停率持平，说明改进可复现但还不是全指标解决。contact sheet 未见空帧、整体倒置或爆炸，`train_000057` 和 `train_000077` 已生成 side-by-side MP4。
 
 因此当前结论是：长 HumanML3D 合成可用；旧 hand-written HumanML3D-to-state cache 不适合正式结论；BVH-to-character native retarget 是目前真正 work 的主线；训练和推理必须使用一致的 segment 语义。默认 `" then "` 分段可作为历史对照，但会误拆含句内 `then` 的 HumanML3D caption；正式长文本评估应优先使用第三列 JSON segments 和第四列 segment lengths。`base_head` 结果说明，修复数据映射、segment 边界和段长后，适度扩大微调范围可以在 approximate paper-style FID/R-precision 上超过 baseline 的主要指标，但仍不是完全解决：R@1 与早停率持平，pose variance 和 lag20 repeat 略高。论文指标相关资产已经具备，但 MoConVQ BVH 到 HumanML3D 263-d feature 的近似 adapter 带有骨架适配误差，且 evaluator 会截断长序列，因此当前 FID/R-precision 必须标为 approximate evaluator-adapter route，不能替代原生 HumanML3D/SMPL 无偏评估。
