@@ -459,6 +459,8 @@ observation z-score、短序列、以及低 z-score 但 depth0 token collapse。
 `train_real_text_gpt.py --train-scope head --smoke`。batch50 的拒绝原因主要是短序列、
 depth0 token collapse 和少量 retarget 后 observation z-score 异常。这说明
 HumanML3D 主线没有被放弃，但正式训练不能再盲目使用早期 hand-written retarget cache；
+`make_bvh_contact_sheet.py` 可把 quality summary 中的 accepted/rejected BVH 抽帧成
+静态审计图，便于在正式训练前检查是否存在倒置、爆肢、明显脚滑或错误拒绝。
 当前更可靠的主线是：
 
 ```text
@@ -529,6 +531,7 @@ stage1_artifacts/generated_bvh_compare/real_stage1_epoch5_vs_baseline/
 - failure log 是否为空或可接受；
 - cache 的 window 数是否合理；
 - indices 是否在合法范围内；
+- accepted/rejected contact sheet 或视频中是否出现明显 false positive/false negative；
 - 训练 loss 是否下降。
 
 同时不要只看 token accuracy。token accuracy 高但 BVH 差时，应优先检查数据转换和生成策略。

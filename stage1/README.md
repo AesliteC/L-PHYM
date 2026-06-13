@@ -482,6 +482,7 @@ Script/stage1/export_humanml3d_to_bvh.py
 Script/stage1/build_real_moconvq_gpt_cache.py
 Script/stage1/build_bvh_character_gpt_cache.py
 Script/stage1/summarize_bvh_retarget_quality.py
+Script/stage1/make_bvh_contact_sheet.py
 Script/stage1/train_real_text_gpt.py
 Script/stage1/generate_long_motion.py
 Script/stage1/run_stage1_model_suite.py

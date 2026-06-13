@@ -4745,6 +4745,64 @@ This confirms that the batch50 accepted-only cache can enter the same
 `train_real_text_gpt.py` path as earlier real caches.  It is not a quality
 claim because `--smoke` runs only one batch for train and one batch for val.
 
+### Contact-sheet visual audit
+
+Added `Script/stage1/make_bvh_contact_sheet.py` to create static BVH visual
+audit sheets from either explicit BVH paths or a `quality_summary.json`.
+It reuses the repository BVH parser/forward-kinematics code and samples a fixed
+number of frames per motion.  This is faster than opening many individual MP4s
+when checking accepted/rejected samples after a quality-filter run.
+
+Commands:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/make_bvh_contact_sheet.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/quality_summary.json \
+  --selection accepted \
+  --limit-per-class 10 \
+  --frames-per-motion 6 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/contact_sheet_accepted.png
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/make_bvh_contact_sheet.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/quality_summary.json \
+  --selection rejected \
+  --limit-per-class 10 \
+  --frames-per-motion 6 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/contact_sheet_rejected_top10.png
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/make_bvh_contact_sheet.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/quality_summary.json \
+  --selection both \
+  --limit-per-class 5 \
+  --frames-per-motion 6 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch50_20260613/contact_sheet_accept5_reject5.png
+```
+
+Observed from the accepted contact sheet:
+
+- Accepted samples no longer show the large upside-down / prone failures seen
+  in the earlier `vec6d` exporter.
+- Walking, shuffling, arm motions, jump-rope-like motion, and tentative walking
+  are generally readable as coarse stick figures.
+- Some accepted rows still show rough motion: exaggerated bending, uncertain
+  foot contact, or arms that may need video inspection.  Therefore accepted
+  means "candidate training data", not "final verified good motion".
+
+Observed from the rejected top10 contact sheet:
+
+- Several rejections visibly match hard retarget cases, including handstand,
+  yoga/leg-high pose, aggressive gestures, and extreme bends.
+- Some high-z-score rejected walking/running rows look superficially plausible
+  in sparse static frames.  These are not automatically false rejections:
+  contact sheets can miss temporal discontinuities, velocity spikes, and token
+  collapse.  They should be checked with MP4/video before loosening thresholds.
+- The current filter is usefully conservative.  It catches obvious hard poses,
+  short clips, and token-collapsed samples, but threshold tuning still needs a
+  larger visual audit set.
+
 ### Interpretation
 
 - HumanML3D is still the main Stage1 data route.  The current work replaces the
@@ -4763,7 +4821,9 @@ processed HumanML3D
   1-3, but only 20% of sampled clips pass the current thresholds.
 - The thresholds are still preliminary engineering thresholds.  Before using
   the accepted set for a report-level model claim, accepted and rejected samples
-  should be rendered and inspected for false positives/false negatives.
+  should be rendered and inspected for false positives/false negatives.  The
+  batch50 contact sheets are the first static visual audit for this purpose,
+  but MP4 checks are still needed for temporal artifacts.
 - A real LLM in-context learning experiment has still not been run.  Codex
   interaction is not counted as that experiment.  If the backup route is used,
   the actual external/local LLM model and saved JSON response must be recorded.
