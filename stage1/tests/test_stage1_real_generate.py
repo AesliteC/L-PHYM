@@ -2,6 +2,23 @@ import unittest
 
 
 class Stage1RealGenerateTests(unittest.TestCase):
+    def test_direct_script_execution_prefers_own_repo_root(self):
+        from pathlib import Path
+
+        import Script.stage1.generate_long_motion as generate
+
+        expected_root = Path(generate.__file__).resolve().parents[2]
+        old_path = list(generate.sys.path)
+
+        try:
+            generate.sys.path[:] = ["/tmp/other_checkout"] + [
+                path for path in old_path if Path(path or ".").resolve() != expected_root
+            ]
+            generate._ensure_own_repo_root_on_path(package="")
+            self.assertEqual(Path(generate.sys.path[0]).resolve(), expected_root)
+        finally:
+            generate.sys.path[:] = old_path
+
     def test_t5_and_hash_text_encoders_return_expected_tensor_shapes_with_stubs(self):
         import sys
         import types

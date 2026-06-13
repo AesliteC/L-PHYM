@@ -3275,3 +3275,252 @@ Result:
 py_compile passed
 35 tests passed, 1 skipped
 ```
+
+## 2026-06-13: Goal and repository-target correction
+
+### Repository target correction
+
+The Stage1 code must be pushed to the `stage1/` folder on the remote `main`
+branch:
+
+```text
+origin/main:stage1/
+```
+
+It should not be treated as work whose final destination is the remote
+`stage1` branch.  A previous sync mistakenly pushed the same Stage1 suite work
+to `origin/stage1`; the corrected commit is now on `origin/main`:
+
+```text
+8f84781 Sync Stage1 pipeline tools into main stage1 folder
+```
+
+All future Stage1 commits should use the `main` branch worktree and keep changes
+scoped to `stage1/`.
+
+### LLM in-context status
+
+No actual external LLM in-context experiment has been run yet.
+
+Current implemented backup tooling:
+
+```text
+GPT cache -> caption/RVQ-token example bank
+example bank -> in-context prompt.txt
+external LLM JSON response -> validator -> RVQ tokens -> BVH
+```
+
+Current executed backup experiments:
+
+```text
+retrieval-only token planning lower bound
+```
+
+The retrieval-only route does not call ChatGPT, Claude, an OpenAI API, a local
+LLM, or the coding assistant.  It only copies/recombines retrieved MoConVQ RVQ
+token examples to verify the backup token-to-BVH and metric pipeline.  A real
+LLM experiment must explicitly record:
+
+```text
+model name
+prompt file
+raw response
+validated tokens
+BVH output
+metrics
+manual semantic checklist
+```
+
+### HumanML3D mainline status
+
+The HumanML3D data route has not been abandoned.  The current diagnosis is that
+the hand-written HumanML3D-to-MoConVQ retarget/cache path remains unreliable for
+final claims.  The mainline fix should continue through a more faithful
+MoConVQ-native retarget path:
+
+```text
+HumanML3D / AMASS source motion
+-> restore/export BVH or compatible source motion
+-> MotionDataSet.add_bvh_with_character()
+-> MoConVQ observation/latent/RVQ cache
+-> text-conditioned MoConGPT fine-tuning
+-> baseline-vs-finetuned comparison
+```
+
+The LLM in-context token-planning route is therefore a backup, not a replacement
+for the HumanML3D/BVH retarget mainline.
+
+## 2026-06-13: Full unified Stage1 suite smoke on main/stage1
+
+### Direct script import fix
+
+While running the full suite from the clean `main` worktree, direct execution of
+`Script/stage1/generate_long_motion.py` could import `real_moconvq_cache.py`
+from a different checkout when multiple MoConVQ worktrees were present on the
+same machine.  This happened because Python put the script directory on
+`sys.path`, but not the owning repository root.
+
+Fix:
+
+```text
+generate_long_motion.py now inserts its own repo root at sys.path[0] when it is
+executed as a script.
+```
+
+Regression coverage:
+
+```text
+tests.test_stage1_real_generate.Stage1RealGenerateTests
+  .test_direct_script_execution_prefers_own_repo_root
+```
+
+The test simulates a conflicting checkout path and verifies that the script path
+guard restores the owning repository root before stage1 imports resolve.
+
+### Suite command
+
+Executed from:
+
+```text
+/home/chenjie/cc/robotics/MoConVQ-main/stage1
+```
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python Script/stage1/run_stage1_model_suite.py \
+  --run-id suite_full_filtered_stage1_20260613_len75_main \
+  --suite-dir stage1_artifacts/model_suite/suite_full_filtered_stage1_20260613_len75_main \
+  --baseline-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --finetuned-checkpoint /home/chenjie/cc/robotics/MoConVQ/stage1_artifacts/checkpoints/filtered_stage1_20260612_181802/best_val.pth \
+  --backup-cache /home/chenjie/cc/robotics/MoConVQ/stage1_artifacts/gpt_cache_filtered_cache_stage1_20260612_174908/train_cache.pt \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --max-length 75 \
+  --context-size 30 \
+  --chunk-size 20 \
+  --top-p 0.95 \
+  --progress-scale 0.5 \
+  --progress-context-size 51 \
+  --progress-prefix-cap 25 \
+  --backup-max-examples 120 \
+  --backup-max-tokens-per-example 24 \
+  --backup-min-tokens-per-example 8 \
+  --backup-top-k 3 \
+  --backup-segment-token-count 18 \
+  --expected-min-frames 1200 \
+  --gpu 0
+```
+
+Output directory:
+
+```text
+stage1_artifacts/model_suite/suite_full_filtered_stage1_20260613_len75_main/
+```
+
+Important files:
+
+```text
+suite_summary.json
+summary_metrics.json
+bvh/*.bvh
+llm_backup/*/prompt.txt
+llm_backup/*/retrieval_tokens.json
+llm_backup/*/retrieval_validation.json
+```
+
+The `stage1_artifacts/` outputs are ignored artifacts and are not intended to be
+committed.
+
+### Model averages
+
+All metrics below are BVH engineering diagnostics, not paper-level
+FID/R-precision.
+
+| model | avg frames | avg sec | avg root path | avg root disp | avg pose vel | avg pose var | lag20 repeat >=0.995 | early stop rate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline_top_p | 1062.0 | 8.849646 | 3.471612 | 1.268157 | 14.052114 | 141.193729 | 0.000000 | 0.75 |
+| finetuned_top_p | 1272.0 | 10.599576 | 3.518982 | 1.570334 | 30.893359 | 326.253117 | 0.000000 | 0.25 |
+| backup_retrieval | 1188.0 | 9.899604 | 3.118687 | 1.200555 | 13.664251 | 148.864182 | 0.000000 | 0.50 |
+
+### Per-prompt diagnostics
+
+Expected minimum length was 1200 frames.
+
+| prompt | model | frames | sec | root path | root disp | pose vel | pose var | lag20 repeat >=0.995 | early stop |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| circle_crouch_stand | baseline_top_p | 1176 | 9.799608 | 5.771557 | 1.235966 | 31.519118 | 417.674809 | 0.000000 | true |
+| circle_crouch_stand | finetuned_top_p | 1296 | 10.799568 | 4.091763 | 2.813482 | 59.866482 | 737.274795 | 0.000000 | false |
+| circle_crouch_stand | backup_retrieval | 1296 | 10.799568 | 4.307908 | 1.605424 | 18.514475 | 389.838804 | 0.000000 | false |
+| sidestep_kick_turn | baseline_top_p | 864 | 7.199712 | 0.781742 | 0.561169 | 3.014137 | 5.735598 | 0.000000 | true |
+| sidestep_kick_turn | finetuned_top_p | 744 | 6.199752 | 1.837311 | 1.248592 | 11.702774 | 33.771956 | 0.000000 | true |
+| sidestep_kick_turn | backup_retrieval | 1296 | 10.799568 | 3.557276 | 1.227494 | 13.027709 | 44.542508 | 0.000000 | false |
+| walk_jump_dance | baseline_top_p | 1392 | 11.599536 | 6.049767 | 2.113611 | 16.527376 | 129.777956 | 0.000000 | false |
+| walk_jump_dance | finetuned_top_p | 1800 | 14.999400 | 5.463325 | 1.216706 | 39.959676 | 394.484026 | 0.000000 | false |
+| walk_jump_dance | backup_retrieval | 1128 | 9.399624 | 2.043694 | 0.330492 | 10.483378 | 98.112158 | 0.000000 | true |
+| walk_turn_wave | baseline_top_p | 816 | 6.799728 | 1.283382 | 1.161882 | 5.147825 | 11.586552 | 0.000000 | true |
+| walk_turn_wave | finetuned_top_p | 1248 | 10.399584 | 2.683528 | 1.002555 | 12.044505 | 139.481690 | 0.000000 | false |
+| walk_turn_wave | backup_retrieval | 1032 | 8.599656 | 2.565869 | 1.638812 | 12.631442 | 62.963258 | 0.000000 | true |
+
+### Interpretation
+
+- The fine-tuned checkpoint reduces the early-stop rate from `0.75` to `0.25`
+  and increases average length from `1062.0` to `1272.0` frames.
+- The fine-tuned checkpoint also increases average root displacement from
+  `1.268157` to `1.570334`, which is a useful movement sanity check.
+- The fine-tuned checkpoint has much higher pose velocity and pose variance than
+  baseline.  This may indicate richer motion, instability, or both; video review
+  is required before making a qualitative claim.
+- The fine-tuned checkpoint is not uniformly better.  On `sidestep_kick_turn`,
+  it stops earlier than baseline (`744` vs `864` frames), so this suite is a
+  controlled smoke result, not a final success claim.
+- `backup_retrieval` is still a retrieval-only lower bound.  It proves that the
+  backup token-planning decode and metric path works, but it is not an actual
+  LLM in-context planning result.
+- Paper-level FID and R-precision remain unavailable until the HumanML3D
+  evaluator source/checkpoints are restored.
+
+### Next evidence needed
+
+- Render the twelve BVH outputs to videos and complete a manual semantic
+  checklist for each prompt/model pair.
+- Continue the main HumanML3D/AMASS/BVH route through MoConVQ-native character
+  retarget, because the current fine-tuned checkpoint was trained from the
+  filtered stage1 cache rather than a fully repaired large HumanML3D native
+  retarget cache.
+- Run a real LLM in-context token-planning experiment only if the backup route
+  is needed, and record the exact model, prompt, raw response, validation output,
+  decoded BVH, metrics, and semantic checklist.
+
+### Verification
+
+Commands run with the `moconvq` conda environment:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/run_stage1_model_suite.py \
+  Script/stage1/llm_token_planning.py \
+  Script/stage1/real_moconvq_cache.py \
+  Script/stage1/generate_long_motion.py \
+  tests/test_stage1_model_suite.py \
+  tests/test_stage1_llm_token_planning.py \
+  tests/test_stage1_real_generate.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_model_suite \
+  tests.test_stage1_llm_token_planning \
+  tests.test_stage1_text_gpt_comparison \
+  tests.test_stage1_bvh_metrics \
+  tests.test_stage1_repository_hygiene \
+  tests.test_stage1_real_cache \
+  tests.test_stage1_real_generate \
+  -v
+```
+
+Result:
+
+```text
+py_compile passed
+47 tests passed, 1 skipped
+```
