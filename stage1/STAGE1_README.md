@@ -60,10 +60,64 @@ HumanML3D 长序列合成本身基本可用；
 long_sequences.h5 -> BVH -> MoConVQ 原生 character retarget 是当前最可信主线；
 修复后的 train_real_text_gpt.py 能在该 native cache 上稳定下降 loss；
 finetuned 生成在工程指标的平均长度和早停率上超过 baseline；
-但 HumanML3D 论文指标 FID/R-precision 仍缺 evaluator assets，不能诚实报告论文级提升。
+HumanML3D/T2M evaluator assets 已经补齐，但当前 FID/R-precision 仍通过
+MoConVQ BVH -> approximate HumanML3D 22-joint adapter 计算，不等价于论文原生 SMPL 评估。
 ```
 
-当前最好的一次主线结果来自 200 条 long HumanML3D 的 BVH-native 实验：
+2026-06-14 artifact 更新：当前最推荐的 Stage1 结果来自
+`segment-aligned` BVH-native 实验。这个版本修复了一个关键训练/推理不一致：
+训练 cache 使用局部 segment caption，推理也用同一个字面 joiner `" then "` 拆分长文本，
+每个 segment 用本地文本条件和前一段生成 latent 作为上下文。
+
+当前推荐 checkpoint：
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_seed13_5ep_20260614/checkpoint_epoch_5.pth
+```
+
+Segment-aligned cache：
+
+| item | result |
+| --- | --- |
+| route | HumanML3D long sequence -> BVH -> MoConVQ native character retarget |
+| train cache | 476 windows, 85,328 valid RVQ tokens, 73 long sequences |
+| val cache | 117 windows, 20,756 valid RVQ tokens, 18 long sequences |
+| train token top fraction | depth0 0.0566, depth1 0.0247, depth2 0.0479, depth3 0.0700 |
+| training | head-only, 5 epochs, val loss 16.863 -> 15.675 |
+| generation convention | `generation_mode=auto`, `segment_joiner=" then "`, `top_p=0.95` |
+
+Held-out Val8 long-caption suite:
+
+| metric | baseline | finetuned |
+| --- | ---: | ---: |
+| avg frames | 1296 | 1329 |
+| early-stop rate | 0.375 | 0.125 |
+| root path | 2.2293 | 2.5027 |
+| pose velocity / variance | 16.073 / 158.511 | 18.800 / 178.334 |
+| lag20 repeat fraction | 0.0064 | 0.0048 |
+| approximate FID lower is better | 18.1357 | 16.8122 |
+| approximate R-precision@1 higher is better | 0.25 | 0.375 |
+| approximate R-precision@2 higher is better | 0.625 | 0.50 |
+| approximate R-precision@3 higher is better | 1.00 | 0.50 |
+| approximate matching score lower is better | 4.3217 | 4.2714 |
+
+Val8 artifacts：
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch5_val8_compare_20260614
+/tmp/stage1_t2m_paper_metrics_segment_aligned_head_val8_20260614/summary.json
+```
+
+视觉结论：Val8 contact sheet 未出现空帧、明显倒置或整体发散；
+`train_000077` 中 baseline 最后接近地面停住，finetuned 能从蹲/跪动作回到站姿。
+但语义细节仍不完全稳定，所以当前结论应表述为“partial but meaningful improvement”，
+不是所有 paper metric cutoff 全面超过 baseline。
+
+四个手写 prompt suite 的结果也支持部分改进：finetuned 提升平均长度
+`1062 -> 1194`、早停率 `0.75 -> 0.50`、approximate FID `28.273 -> 25.903`，
+但 R-precision@1 从 `0.50` 降到 `0.25`，说明小样本手写 prompt 的语义指标仍不稳。
+
+上一阶段的工程最好结果来自 200 条 long HumanML3D 的 BVH-native 实验：
 
 | item | result |
 | --- | --- |
@@ -81,10 +135,12 @@ finetuned 生成在工程指标的平均长度和早停率上超过 baseline；
 
 This is the first run where the main HumanML3D reconstruction route gives a
 measurable generation-side improvement over the MoConVQ baseline on the Stage1
-engineering metrics.  It is still not a paper-level claim because FID and
-R-precision are unavailable without the pretrained HumanML3D evaluator.
+engineering metrics.  At the time of that run, it was not a paper-metric claim
+because the pretrained HumanML3D evaluator assets had not yet been installed.
+The later segment-aligned run above adds approximate FID/R-precision through
+the local T2M evaluator adapter route.
 
-The current best run can be summarized reproducibly with:
+That historical run can be summarized reproducibly with:
 
 ```bash
 cd /home/chenjie/cc/robotics/MoConVQ
@@ -795,7 +851,7 @@ python Script/stage1/evaluate_bvh_metrics.py \
   --output stage1_artifacts/generated_bvh_compare/<run_id>/summary_metrics_script.json
 ```
 
-MoConVQ 论文的正式 Text2Motion 量化指标是 HumanML3D test set 上的 FID 和 R-precision，依赖兼容的 HumanML3D/SMPL motion feature extractor。当前仓库尚未包含完整 evaluator，因此 Stage1 暂时用 BVH 工程指标和视频检查做中间诊断；最终“优于 baseline”的论文级结论仍应补齐 FID/R-precision 或等价的文本-动作匹配评估。
+MoConVQ 论文的正式 Text2Motion 量化指标是 HumanML3D test set 上的 FID 和 R-precision，依赖兼容的 HumanML3D/SMPL motion feature extractor。当前本地已经具备 T2M evaluator source/checkpoint/glove assets，因此 Stage1 可以输出 approximate FID/R-precision/matching-score；但生成结果需要先经过 MoConVQ BVH -> approximate HumanML3D 22-joint feature adapter，长序列还会被 evaluator 截断到最多 196 帧，所以报告中必须标注为 approximate evaluator-adapter route，而不是论文原生 SMPL 评估。
 
 当前 readiness 检查已显式支持 T2M-GPT/text-to-motion evaluator 布局。需要的最小源码和资源是：
 
@@ -838,7 +894,7 @@ python Script/stage1/prepare_t2m_evaluator_assets.py \
   --print-download-commands
 ```
 
-当前 `/tmp/stage1_t2m_evaluator_assets` 已经可以从 `/tmp/T2M-GPT-stage1-inspect` 复制 evaluator source files；readiness 因此只剩 checkpoint/glove assets 缺失。`moconvq` 环境已经安装了 `gdown`，但 2026-06-13 的 Google Drive 下载尝试显示：无代理时网络不可达；使用 `127.0.0.1:7898` 代理可以连接，但 `t2m.zip` 约 1.22GB，速度从约 300KB/s 掉到 70KB/s 左右，2 分 42 秒只下载约 31.5MB，因此已中止并清理不完整 zip。后续需要长时间后台下载、换镜像，或手动放置上述五个 asset 文件。
+当前 `/tmp/stage1_t2m_evaluator_assets` 已经包含 evaluator source files、checkpoint 和 glove assets；`check_evaluation_readiness.py` 对该目录返回 `paper_metrics_ready=true`。历史下载记录：无代理时 Google Drive 网络不可达；需要下载时应使用 `http_proxy=http://127.0.0.1:7898` 和 `https_proxy=http://127.0.0.1:7898`。
 
 为了让 evaluator assets 一到就能跑正式指标，当前新增了 Stage1 paper-metric runner：
 
@@ -1254,6 +1310,6 @@ stage1_artifacts/checkpoints/fixed_dataset_stage1_20260529_135401/best_val.pth
 
 Stage1 的旧 fixed dataset 工程链路已经完整跑通，但旧 finetuned checkpoint 已判定无效：它改善了早停，却因训练/推理 latent 空间不一致、全量微调覆盖先验、以及 HumanML3D retarget/cache 质量不足导致视频质量差。当前代码已修复训练上下文 latent 重建，并把 HumanML3D 主线推进到 `long_sequences.h5` -> `joints_ik` BVH export -> MoConVQ-native character retarget -> per-file quality filter -> deterministic accepted train/val split -> accepted-only GPT cache。
 
-当前推荐的 Stage1 engineering 结果是 2026-06-13 的 long-native 200 条、head-only 5 epoch run：200 条长序列 BVH 中 91 条通过 native retarget/filter，形成 73 train / 18 val sequences、278 train windows 和 66 val windows；val loss 从 8.980 降到 8.443。top-p baseline-vs-finetuned 对比中，平均长度从 1062 frames 提升到 1194 frames，早停率从 0.75 降到 0.50，root path 从 3.472 提升到 4.187；pose velocity/variance 从 14.052 / 141.194 增至 19.133 / 190.011，说明动作更长、更活跃，但仍有一定稳定性代价。视频/contact sheet 上暂未看到明显摔倒、骨架翻转或全身崩坏，`circle_crouch_stand` 改善最明显，`walk_jump_dance` 和 `sidestep_kick_turn` 仍基本没有变化。
+当前推荐的 Stage1 engineering/metric 结果是 2026-06-14 artifact label 的 segment-aligned native-retarget run：73 train / 18 val long sequences 形成 476 train windows 和 117 val windows，head-only 5 epoch 训练中 val loss 从 16.863 降到 15.675。Held-out Val8 top-p baseline-vs-finetuned 对比中，平均长度从 1296 frames 提升到 1329 frames，早停率从 0.375 降到 0.125，root path 从 2.229 提升到 2.503，lag20 repeat fraction 从 0.0064 降到 0.0048。Approximate T2M evaluator route 上，FID 从 18.136 降到 16.812，R-precision@1 从 0.25 提升到 0.375，matching score 从 4.322 降到 4.271，但 R-precision@2/@3 下降。
 
-因此当前结论是：长 HumanML3D 合成可用；旧 hand-written HumanML3D-to-state cache 不适合正式结论；BVH-to-character native retarget 是目前真正 work 的主线；保守 head-only GPT 微调已经在 Stage1 工程指标和视频观感上比 baseline 好一点，但还不是论文级胜出。论文指标 FID/R-precision 仍缺 evaluator checkpoint/glove assets；MoConVQ BVH 到 HumanML3D 263-d feature 的近似 adapter 已完成 smoke 和 20-sample roundtrip calibration，但该路线仍带有约 `0.08` joint MPJPE 的骨架适配误差，因此只能作为 approximate evaluator-adapter route 使用，不能替代原生 HumanML3D/SMPL evaluator 结论。
+因此当前结论是：长 HumanML3D 合成可用；旧 hand-written HumanML3D-to-state cache 不适合正式结论；BVH-to-character native retarget 是目前真正 work 的主线；训练和推理必须使用一致的 `" then "` segment 语义；保守 head-only GPT 微调已经在 held-out long captions 上取得部分但可复现的 baseline 改进。论文指标相关资产已经具备，但 MoConVQ BVH 到 HumanML3D 263-d feature 的近似 adapter 带有骨架适配误差，且 evaluator 会截断长序列，因此当前 FID/R-precision 必须标为 approximate evaluator-adapter route，不能替代原生 HumanML3D/SMPL 无偏评估。

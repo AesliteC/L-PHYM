@@ -95,6 +95,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--max-text-length", type=int, default=256)
     parser.add_argument("--max-length", type=int, default=75)
     parser.add_argument("--generation-mode", choices=("auto", "rolling", "segmented"), default="auto")
+    parser.add_argument("--segment-joiner", default=" then ")
     parser.add_argument("--context-size", type=int, default=30)
     parser.add_argument("--chunk-size", type=int, default=20)
     parser.add_argument("--segment-length", type=int, default=None)
@@ -167,6 +168,8 @@ def main(argv: Iterable[str] | None = None) -> None:
                     str(args.max_length),
                     "--generation-mode",
                     args.generation_mode,
+                    "--segment-joiner",
+                    args.segment_joiner,
                     "--context-size",
                     str(args.context_size),
                     "--chunk-size",
@@ -266,6 +269,7 @@ def main(argv: Iterable[str] | None = None) -> None:
             "seed": args.seed,
             "max_length": args.max_length,
             "generation_mode": args.generation_mode,
+            "segment_joiner": args.segment_joiner,
             "context_size": args.context_size,
             "chunk_size": args.chunk_size,
             "segment_length": args.segment_length,

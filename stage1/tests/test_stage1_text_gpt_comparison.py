@@ -107,6 +107,8 @@ class Stage1TextGPTComparisonTests(unittest.TestCase):
                         "51",
                         "--progress-prefix-cap",
                         "25",
+                        "--segment-joiner",
+                        " THEN ",
                     ]
                 )
             finally:
@@ -125,9 +127,12 @@ class Stage1TextGPTComparisonTests(unittest.TestCase):
                 self.assertEqual(command[command.index("--progress-context-size") + 1], "51")
                 self.assertIn("--progress-prefix-cap", command)
                 self.assertEqual(command[command.index("--progress-prefix-cap") + 1], "25")
+                self.assertIn("--segment-joiner", command)
+                self.assertEqual(command[command.index("--segment-joiner") + 1], " THEN ")
             summary = json.loads((video_dir / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary["sampling"]["progress_context_size"], 51)
             self.assertEqual(summary["sampling"]["progress_prefix_cap"], 25)
+            self.assertEqual(summary["sampling"]["segment_joiner"], " THEN ")
 
 
 if __name__ == "__main__":

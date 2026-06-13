@@ -7738,3 +7738,356 @@ R-precision, and matching score for the current baseline/finetuned BVH suite.
 It still does not complete paper-level evaluation because the assets are absent
 locally and because the route remains approximate due to BVH-to-HumanML3D
 skeleton adaptation and 196-frame evaluator truncation.
+
+## 2026-06-14 artifact run: segment-aligned native-retarget Stage1 route
+
+### Purpose
+
+The previous best native-retarget run improved generation length and early-stop
+rate, but it trained every window with the full long caption while inference used
+segmented local prompts split by `" then "`.  That mismatch made the result hard
+to interpret: the finetuned GPT was not trained under the same text-conditioning
+semantics used at rollout time.
+
+This run fixes that consistency gap and tests the current main Stage1 route:
+
+```text
+HumanML3D long sequence synthesis
+  -> export long HumanML3D motions to BVH
+  -> MoConVQ MotionDataSet.add_bvh_with_character()
+  -> MoConVQ simulator character observation
+  -> agent.encode_seq_all()
+  -> segment-aligned GPT cache
+  -> conservative head-only Text2Motion_Transformer fine-tune
+  -> segmented long-text inference with the same " then " convention
+```
+
+This is still a HumanML3D-based route.  We are not abandoning HumanML3D; we are
+avoiding the old hand-written HumanML3D-to-MoConVQ body-state mapping because it
+caused token collapse and poor observation distribution.  No external LLM has
+been called for the results below; the LLM token-planning code remains a backup
+path only.
+
+### Code changes
+
+- `Script/stage1/build_bvh_character_gpt_cache.py`
+  - added segment-aligned cache metadata for local-caption training:
+    `segment_idxs`, `num_segments`, `segment_progress`, `prefix_lengths`,
+    `target_ranges`, `segment_ranges`, `target_masks`, and `end_masks`.
+  - supported segment-prefix sampling so training windows match segmented
+    inference more closely.
+- `Script/stage1/summarize_bvh_retarget_quality.py`
+  - updated for the same segment-aware cache summaries.
+- `Script/stage1/run_stage1_model_suite.py`
+  - added `--segment-joiner` and recorded it in `suite_summary.json`.
+- `Script/stage1/run_text_gpt_comparison.py`
+  - added the same `--segment-joiner` forwarding and summary field so direct
+    comparison runs cannot silently diverge from suite runs.
+- Tests were extended for segment metadata and segment-joiner propagation.
+
+### Segment-aligned cache
+
+Artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_20260614/train_cache.pt
+/tmp/stage1_segment_aligned_bvh_native_200_20260614/val_cache.pt
+```
+
+Cache summary:
+
+| Split | Windows | Valid RVQ tokens | Unique long sequences |
+|---|---:|---:|---:|
+| train | 476 | 85,328 | 73 |
+| val | 117 | 20,756 | 18 |
+
+Token distribution is not collapsed:
+
+| Split | Depth0 top frac | Depth1 top frac | Depth2 top frac | Depth3 top frac |
+|---|---:|---:|---:|---:|
+| train | 0.0566 | 0.0247 | 0.0479 | 0.0700 |
+| val | 0.0450 | 0.0334 | 0.0495 | 0.0934 |
+
+Interpretation:
+
+- The cache is much smaller than the old hand-written HumanML3D observation
+  cache, but its token distribution is far healthier.
+- Training and inference now share the same local segment semantics: captions
+  are split with the literal joiner `" then "`.
+- Current splitter is intentionally simple and reproducible.  It handles the
+  synthetic caption convention but not arbitrary `Then`, Chinese `然后`, or
+  punctuation-only clauses.
+
+### Head-only segment-aligned training
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/train_real_text_gpt.py \
+  --train-cache /tmp/stage1_segment_aligned_bvh_native_200_20260614/train_cache.pt \
+  --val-cache /tmp/stage1_segment_aligned_bvh_native_200_20260614/val_cache.pt \
+  --init-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --output-dir /tmp/stage1_segment_aligned_bvh_native_200_head_seed13_5ep_20260614 \
+  --epochs 5 \
+  --batch-size 8 \
+  --lr 1e-5 \
+  --weight-decay 0.01 \
+  --gpu 0 \
+  --seed 13 \
+  --save-every 1 \
+  --num-workers 2 \
+  --train-scope head \
+  --progress-conditioning auto \
+  --progress-scale 0.5 \
+  --teacher-progress-conditioning none \
+  --context-size 51
+```
+
+Checkpoint:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_seed13_5ep_20260614/checkpoint_epoch_5.pth
+```
+
+Training curve:
+
+| Epoch | Train loss | Val loss | Train acc | Val acc |
+|---:|---:|---:|---:|---:|
+| 0 | 14.6498 | 16.8632 | 0.0576 | 0.0701 |
+| 1 | 14.3336 | 16.5705 | 0.0567 | 0.0702 |
+| 2 | 13.9194 | 16.2719 | 0.0587 | 0.0708 |
+| 3 | 13.5453 | 15.9782 | 0.0588 | 0.0711 |
+| 4 | 13.1992 | 15.6747 | 0.0598 | 0.0713 |
+
+The loss is high because the segment-aligned cache is harder and smaller, but it
+decreases monotonically.  This checkpoint is the current recommended
+training/inference-consistent Stage1 model.
+
+### Four hand-written long-prompt suite
+
+Suite:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch5_compare_20260614
+```
+
+Generation settings:
+
+```text
+generation_mode = auto
+segment_joiner = " then "
+max_length = 75
+context_size = 30
+chunk_size = 20
+top_p = 0.95
+temperature = 1.0
+progress_conditioning = auto
+baseline_progress_conditioning = none
+progress_scale = 0.5
+```
+
+Engineering metrics:
+
+| Metric | Baseline | Finetuned |
+|---|---:|---:|
+| avg frames | 1062 | 1194 |
+| early-stop rate | 0.75 | 0.50 |
+| avg root path | 3.4716 | 3.4891 |
+| avg pose velocity | 14.0521 | 14.2359 |
+| avg pose variance | 141.1937 | 250.3179 |
+| lag20 repeat fraction | 0.0000 | 0.0039 |
+
+Approximate T2M evaluator metrics:
+
+| Metric | Baseline | Finetuned |
+|---|---:|---:|
+| FID lower is better | 28.2732 | 25.9026 |
+| R-precision@1 higher is better | 0.50 | 0.25 |
+| R-precision@2 higher is better | 0.50 | 0.75 |
+| R-precision@3 higher is better | 1.00 | 1.00 |
+| matching score lower is better | 5.0807 | 5.8823 |
+
+Video/contact-sheet artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch5_compare_20260614/video/
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch5_compare_20260614/contact_sheet.png
+```
+
+Interpretation:
+
+- Finetuned improves average length, early-stop rate, and approximate FID.
+- R-precision is mixed: top2 improves, top3 ties, top1 worsens.
+- Visual contact sheet does not show obvious blank frames, full-body inversion,
+  or catastrophic fall-over, but it is not enough to claim precise semantic
+  success.
+
+### Failed branch: base_head + KL on the segment-aligned cache
+
+Purpose: test whether updating more GPT layers improves semantics.
+
+Result:
+
+| Metric | Baseline | Finetuned base_head+KL |
+|---|---:|---:|
+| avg frames | 1062 | 1356 |
+| early-stop rate | 0.75 | 0.25 |
+| avg pose velocity | 14.0521 | 26.1391 |
+| FID | 28.2732 | 28.3293 |
+| R-precision@1 | 0.50 | 0.25 |
+| R-precision@2 | 0.50 | 0.50 |
+| R-precision@3 | 1.00 | 0.50 |
+| matching score | 5.0807 | 5.5170 |
+
+Interpretation:
+
+- Lower validation loss did not translate into better long-rollout or paper
+  metrics.
+- Updating base layers is currently less reliable than head-only conservative
+  fine-tuning.
+
+### Failed branch: head-only top_p=0.90, temperature=0.8
+
+Result:
+
+| Metric | Baseline | Finetuned |
+|---|---:|---:|
+| avg frames | 1158 | 1020 |
+| early-stop rate | 0.50 | 1.00 |
+| FID | 27.8603 | 26.8815 |
+| R-precision@1 | 0.50 | 0.25 |
+| R-precision@2 | 0.50 | 0.50 |
+| R-precision@3 | 1.00 | 1.00 |
+
+Interpretation: the sampling change helps FID slightly but hurts duration and
+does not fix R-precision@1, so it is not the recommended setting.
+
+### Held-out Val8 long-caption suite
+
+Because four hand-written prompts are very small and noisy, the same checkpoint
+was also evaluated on eight held-out long captions from the segment-aligned val
+split.
+
+Suite:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch5_val8_compare_20260614
+```
+
+Paper-metric summary:
+
+```text
+/tmp/stage1_t2m_paper_metrics_segment_aligned_head_val8_20260614/summary.json
+```
+
+Engineering metrics:
+
+| Metric | Baseline | Finetuned |
+|---|---:|---:|
+| avg frames | 1296 | 1329 |
+| early-stop rate | 0.375 | 0.125 |
+| avg root path | 2.2293 | 2.5027 |
+| avg pose velocity | 16.0732 | 18.7995 |
+| avg pose variance | 158.5108 | 178.3341 |
+| lag20 repeat fraction | 0.0064 | 0.0048 |
+
+Approximate T2M evaluator metrics:
+
+| Metric | Baseline | Finetuned |
+|---|---:|---:|
+| FID lower is better | 18.1357 | 16.8122 |
+| R-precision@1 higher is better | 0.25 | 0.375 |
+| R-precision@2 higher is better | 0.625 | 0.50 |
+| R-precision@3 higher is better | 1.00 | 0.50 |
+| matching score lower is better | 4.3217 | 4.2714 |
+
+Video/contact-sheet artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch5_val8_compare_20260614/video/
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch5_val8_compare_20260614/contact_sheet.png
+```
+
+Visual audit:
+
+- The contact sheet shows no blank frames, obvious full-body inversion, or
+  global pose explosion.
+- `train_000077` is the clearest visual improvement: the baseline ends near the
+  ground, while finetuned reaches a crouch/kneel state and returns to standing.
+- Some samples mainly improve length/motion coverage rather than detailed
+  semantic correctness.
+
+Interpretation:
+
+- This is currently the strongest Stage1 result: finetuned improves FID,
+  R-precision@1, matching score, average length, early-stop rate, and repetition
+  proxy on held-out long captions.
+- It is not a clean win on every paper metric cutoff because R-precision@2 and
+  R-precision@3 drop.
+- The evaluator route is approximate: generated MoConVQ BVHs are converted
+  through a `base.bvh` to HumanML3D 22-joint adapter, and the T2M evaluator
+  truncates long sequences to at most 196 frames at 20 FPS.
+
+### Paper evaluator readiness
+
+Assets and source files are now present under:
+
+```text
+/tmp/stage1_t2m_evaluator_assets
+```
+
+Readiness check:
+
+```text
+paper_metrics_ready = true
+missing = []
+```
+
+Required files found:
+
+```text
+checkpoints/t2m/text_mot_match/model/finest.tar
+checkpoints/t2m/text_mot_match/opt.txt
+glove/our_vab_data.npy
+glove/our_vab_words.pkl
+glove/our_vab_idx.pkl
+```
+
+### Validation
+
+Commands:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/run_text_gpt_comparison.py \
+  Script/stage1/run_stage1_model_suite.py \
+  Script/stage1/generate_long_motion.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_text_gpt_comparison \
+  tests.test_stage1_model_suite \
+  tests.test_stage1_real_generate \
+  -v
+```
+
+Result:
+
+```text
+20 tests passed
+```
+
+### Current honest conclusion
+
+The current best Stage1 claim is:
+
+```text
+Segment-aligned HumanML3D -> BVH -> MoConVQ-native retarget + head-only GPT
+fine-tuning gives a reproducible partial improvement over the MoConVQ baseline
+on long multi-stage prompts.  On the held-out Val8 suite it improves approximate
+FID, R-precision@1, matching score, early-stop rate, average length, and the
+lag20 repetition proxy.  It does not yet improve every R-precision cutoff, so
+the final report should present it as a meaningful but incomplete Stage1 result,
+not as a full paper-metric victory.
+```

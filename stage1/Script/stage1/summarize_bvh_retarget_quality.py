@@ -43,15 +43,22 @@ def _metrics_by_label(metrics_payload: dict[str, object] | None) -> dict[str, di
     return {str(row["label"]): row for row in metrics_payload.get("rows", [])}  # type: ignore[union-attr]
 
 
-def _captions_by_id(export_payload: dict[str, object] | None) -> dict[str, str]:
+def _export_rows_by_id(export_payload: dict[str, object] | None) -> dict[str, dict[str, object]]:
     if export_payload is None:
         return {}
-    captions: dict[str, str] = {}
+    rows: dict[str, dict[str, object]] = {}
     for row in export_payload.get("exports", []):  # type: ignore[union-attr]
         sample_id = str(row.get("sample_id", ""))
         if sample_id:
-            captions[sample_id] = str(row.get("caption", ""))
-    return captions
+            rows[sample_id] = dict(row)
+        sequence_id = str(row.get("sequence_id", ""))
+        if sequence_id:
+            rows[sequence_id] = dict(row)
+        output_bvh = str(row.get("output_bvh", ""))
+        if output_bvh:
+            rows[Path(output_bvh).stem] = dict(row)
+            rows[str(Path(output_bvh))] = dict(row)
+    return rows
 
 
 def _reject_reasons(
@@ -103,11 +110,12 @@ def summarize_retarget_quality(
     min_depth0_unique: int = 16,
 ) -> dict[str, object]:
     metrics = _metrics_by_label(metrics_payload)
-    captions = _captions_by_id(export_payload)
+    export_rows = _export_rows_by_id(export_payload)
     rows: list[dict[str, object]] = []
     for item in retarget_payload.get("per_file", []):  # type: ignore[union-attr]
         path = str(item["path"])
         label = _label_from_path(path)
+        export_row = export_rows.get(label) or export_rows.get(path) or {}
         z = item["observation_z"]["aggregate_abs_z"]  # type: ignore[index]
         stats = item["stats"]  # type: ignore[assignment]
         frames = int(item["state_shape"][0])  # type: ignore[index]
@@ -136,7 +144,11 @@ def summarize_retarget_quality(
             {
                 "label": label,
                 "path": path,
-                "caption": captions.get(label, ""),
+                "caption": str(export_row.get("caption", "")),
+                "sample_ids": list(export_row.get("sample_ids", [])),
+                "clip_captions": list(export_row.get("clip_captions", [])),
+                "clip_boundaries": list(export_row.get("clip_boundaries", [])),
+                "transition_forced": list(export_row.get("transition_forced", [])),
                 "accepted": not reasons,
                 "reject_reasons": reasons,
                 "frames": frames,
