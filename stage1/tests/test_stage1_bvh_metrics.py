@@ -54,6 +54,20 @@ class Stage1BVHMetricTests(unittest.TestCase):
         self.assertGreater(row["root_path_length"], 0.0)
         self.assertIn("lag_1_mean_cosine", row)
 
+    def test_load_bvh_motion_trims_extra_rows_to_header_frame_count(self):
+        from Script.stage1.evaluate_bvh_metrics import load_bvh_motion
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bvh = Path(tmpdir) / "extra_rows.bvh"
+            _write_toy_bvh(bvh, frames=8)
+            with bvh.open("a", encoding="utf-8") as handle:
+                handle.write("999 0 0 0 0 0\n")
+
+            motion, _frame_time = load_bvh_motion(bvh)
+
+        self.assertEqual(motion.shape[0], 8)
+        self.assertNotEqual(motion[-1, 0], 999)
+
 
 if __name__ == "__main__":
     unittest.main()

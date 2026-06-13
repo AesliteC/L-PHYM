@@ -283,76 +283,225 @@ Prompt 组：
 - 是否明显脚滑；
 - 人工视觉评分。
 
-## 10. 最小实现任务
+## 10. 当前实现状态
+
+上述 backup route 现在由一个统一脚本实现：
+
+```text
+Script/stage1/llm_token_planning.py
+```
+
+它包含以下子命令：
+
+```text
+export-bank      从 GPT cache 导出 caption -> RVQ token example bank
+retrieve         用轻量 token-overlap / IDF 检索相关 examples
+build-prompt     为外部 LLM / 手动 ICL 生成 prompt 和检索记录
+validate         解析和校验 LLM JSON response，输出 tokens.json
+retrieval-plan   无 LLM API 时的 retrieval-only token baseline
+decode-bvh       将 4-depth RVQ token sequence 解码成 BVH
+```
+
+这种合并式入口替代了最初计划中的多个小脚本，便于在课程环境中复现和测试。
 
 ### Task A: 导出 example bank
 
-新增脚本：
+命令：
 
 ```text
-Script/stage1/export_llm_motion_examples.py
+python Script/stage1/llm_token_planning.py export-bank \
+  --cache stage1_artifacts/gpt_cache_filtered_cache_stage1_20260612_174908/train_cache.pt \
+  --output stage1_artifacts/llm_backup/example_bank_filtered_200.jsonl \
+  --max-examples 200 \
+  --max-tokens-per-example 32 \
+  --min-tokens-per-example 8
 ```
 
-输入：
-
-```text
---cache stage1_artifacts/gpt_cache/train_cache.pt
---output stage1_artifacts/llm_backup/example_bank.jsonl
---max-examples 1600
---max-tokens-per-example 50
-```
-
-输出 JSONL，每行包含 caption、window_range、indices。
+输出 JSONL，每行包含 caption、window_range、indices、indices_depth0 等字段。
 
 ### Task B: 检索 examples
 
-新增脚本：
+命令：
 
 ```text
-Script/stage1/retrieve_llm_motion_examples.py
+python Script/stage1/llm_token_planning.py retrieve \
+  --bank stage1_artifacts/llm_backup/example_bank_filtered_200.jsonl \
+  --query "a person kicks with the right foot" \
+  --top-k 5
 ```
 
-输入一个 query segment，从 example bank 中取 top-k captions。第一版可用 BM25/token overlap，不引入新依赖。
+第一版使用轻量 token-overlap / IDF scoring，不引入额外依赖。它不是 semantic retrieval 的最终形态，但足够支撑离线 prompt 构造和 retrieval baseline。
 
 ### Task C: LLM prompt runner
 
-新增脚本：
-
 ```text
-Script/stage1/run_llm_motion_planner.py
+python Script/stage1/llm_token_planning.py build-prompt \
+  --bank stage1_artifacts/llm_backup/example_bank_filtered_200.jsonl \
+  --text "a person walks forward then kicks with the right foot then dances" \
+  --top-k 3 \
+  --segment-token-count 12 \
+  --max-tokens-per-example 12 \
+  --output-prompt stage1_artifacts/llm_backup/runs/<run_id>/prompt.txt \
+  --output-json stage1_artifacts/llm_backup/runs/<run_id>/retrieval.json
 ```
 
-第一版可以不接 API，只生成 prompt 文件，由人工复制到 ChatGPT/Claude/其他大模型，再把 response 保存回来。
-
-原因：课程环境和网络/API key 不稳定时，手工模式最稳，也符合论文中上传 examples 文件给 Claude 的实验方式。
+第一版不接外部 API，只生成 prompt 文件。使用者可以把 prompt 复制到 ChatGPT/Claude/其他 LLM，再把 response 保存回来。这符合 MoConVQ 论文中用商业 LLM 做 in-context learning 的设置，也避免 API key 和网络依赖。
 
 ### Task D: token validator
 
-新增脚本：
-
 ```text
-Script/stage1/validate_llm_motion_tokens.py
+python Script/stage1/llm_token_planning.py validate \
+  --response-file stage1_artifacts/llm_backup/runs/<run_id>/raw_response.txt \
+  --output-tokens stage1_artifacts/llm_backup/runs/<run_id>/tokens.json \
+  --validation-json stage1_artifacts/llm_backup/runs/<run_id>/validation.json \
+  --min-length 20 \
+  --max-consecutive-repeat 5
 ```
 
-检查 JSON、shape、范围、重复率，并输出清洗后的 `tokens.json`。
+validator 检查 JSON、tuple depth、整数范围、长度和连续重复 tuple。必要时可用 `--repair` 对少量越界值做 clamp，但正式实验应优先保留原始 response 和 validation report。
 
-### Task E: tokens to BVH
-
-新增脚本：
+### Task E: retrieval-only baseline
 
 ```text
-Script/stage1/generate_bvh_from_rvq_tokens.py
+python Script/stage1/llm_token_planning.py retrieval-plan \
+  --bank stage1_artifacts/llm_backup/example_bank_filtered_200.jsonl \
+  --text "a person walks forward then kicks with the right foot then dances" \
+  --top-k 3 \
+  --segment-token-count 12 \
+  --trim-repeat-runs \
+  --output-tokens stage1_artifacts/llm_backup/runs/<run_id>/retrieval_tokens.json \
+  --validation-json stage1_artifacts/llm_backup/runs/<run_id>/retrieval_validation.json
 ```
 
-输入：
+这条路线不调用 LLM，只把每段检索到的最佳 example token 复制/截断到目标长度。它不是最终 backup 质量上限，但能作为 deterministic lower bound，证明 token-to-BVH 解码路径是否可运行。`--trim-repeat-runs` 会截断超长连续相同 RVQ tuple，并把 `repeat_repairs` 写入 validation JSON；这是为了避免检索复制导致 token 文件不可解码，不应解释为语义质量提升。
+
+### Task F: tokens to BVH
 
 ```text
---tokens stage1_artifacts/llm_backup/runs/<run_id>/tokens.json
---base-data moconvq_base.data
---output-bvh stage1_artifacts/llm_backup/runs/<run_id>/output.bvh
+python Script/stage1/llm_token_planning.py decode-bvh \
+  --tokens stage1_artifacts/llm_backup/runs/<run_id>/tokens.json \
+  --base-data moconvq_base.data \
+  --motion-dataset simple_motion_data.h5 \
+  --gpu 0 \
+  --output-bvh stage1_artifacts/llm_backup/runs/<run_id>/output.bvh
 ```
 
-功能：从 codebook embedding 重建 latent，复用 MoConVQ decoder/controller 写 BVH。
+功能：从 MoConVQ codebook embedding 重建 768-d latent，复用 MoConVQ decoder/controller 写 BVH。建议显式传 `--motion-dataset`，尤其是在临时 worktree 或仓库外运行时；MoConVQ 默认 config 使用相对路径 `./simple_motion_data.h5`。
+
+## 10.1 Retrieval-only smoke result
+
+Run id:
+
+```text
+llm_backup_smoke_20260613
+```
+
+Smoke prompt:
+
+```text
+a person walks forward then kicks with the right foot then dances
+```
+
+Inputs and outputs:
+
+```text
+example bank: stage1_artifacts/llm_backup/example_bank_filtered_200.jsonl
+prompt:       stage1_artifacts/llm_backup/runs/llm_backup_smoke_20260613/prompt.txt
+tokens:       stage1_artifacts/llm_backup/runs/llm_backup_smoke_20260613/retrieval_tokens.json
+BVH:          stage1_artifacts/llm_backup/runs/llm_backup_smoke_20260613/retrieval_output.bvh
+metrics:      stage1_artifacts/llm_backup/runs/llm_backup_smoke_20260613/retrieval_bvh_metrics.json
+```
+
+Result:
+
+| Item | Value |
+|---|---:|
+| exported examples | 200 |
+| generated retrieval-only RVQ tuples | 36 |
+| token validation | passed |
+| decoded BVH frames | 864 |
+| duration | 7.20 s |
+| early stop threshold | 600 frames |
+| early stop | false |
+| root path | 1.739 |
+| root displacement | 0.279 |
+| pose velocity mean | 11.362 |
+| pose variance mean | 89.864 |
+| lag-20 repeat > 0.995 | 0.00% |
+
+Interpretation:
+
+- The backup engineering path is now a working minimal loop:
+
+```text
+GPT cache -> example bank -> retrieval/prompt -> validated RVQ tokens
+-> MoConVQ decoder/controller -> BVH -> engineering metrics
+```
+
+- This smoke is not a semantic success claim. The retrieval-only baseline can copy and repeat examples, so the output must be compared visually and against baseline/finetuned GPT on the same prompts.
+- The next backup experiment should use an actual LLM response through `build-prompt` + `validate`, then evaluate the generated BVH with the same Stage1 metric script and videos.
+
+## 10.2 Unified suite retrieval-only smoke result
+
+The backup route is now also wired into:
+
+```text
+Script/stage1/run_stage1_model_suite.py
+```
+
+This gives the backup path the same prompt set, artifact layout, and BVH metric
+summary as baseline-vs-finetuned GPT comparison.
+
+Smoke command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python Script/stage1/run_stage1_model_suite.py \
+  --run-id suite_backup_retrieval_smoke_20260613 \
+  --suite-dir stage1_artifacts/model_suite/suite_backup_retrieval_smoke_20260613 \
+  --skip-gpt \
+  --finetuned-checkpoint stage1_artifacts/checkpoints/filtered_stage1_20260612_181802/best_val.pth \
+  --backup-cache /home/chenjie/cc/robotics/MoConVQ/stage1_artifacts/gpt_cache_filtered_cache_stage1_20260612_174908/train_cache.pt \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --backup-max-examples 40 \
+  --backup-max-tokens-per-example 24 \
+  --backup-min-tokens-per-example 8 \
+  --backup-top-k 3 \
+  --backup-segment-token-count 18 \
+  --expected-min-frames 1200 \
+  --gpu 0
+```
+
+Result:
+
+| Prompt | Tuples after validation | Repeat repairs | BVH frames |
+|---|---:|---:|---:|
+| walk_turn_wave | 47 | 7 | 1128 |
+| circle_crouch_stand | 50 | 4 | 1200 |
+| walk_jump_dance | 51 | 3 | 1224 |
+| sidestep_kick_turn | 54 | 0 | 1296 |
+
+Model averages:
+
+| Metric | backup_retrieval |
+|---|---:|
+| avg frames | 1212.0 |
+| avg duration | 10.0996 s |
+| avg root path | 2.5058 |
+| avg root displacement | 0.6933 |
+| avg pose velocity mean | 20.8206 |
+| avg pose variance mean | 192.8391 |
+| lag-20 repeat > 0.995 | 0.00 |
+| early stop rate @ 1200 frames | 0.25 |
+
+Interpretation:
+
+- The backup path can now produce suite-compatible artifacts:
+  `prompt.txt`, retrieval metadata, validated tokens, BVH, `summary_metrics.json`,
+  and `suite_summary.json`.
+- This is still retrieval-only, not actual LLM planning.  It proves the backup
+  decoder/evaluation loop is reusable, but the next report-worthy backup result
+  should use a real external LLM response via `--llm-response-map`.
 
 ## 11. 预期优缺点
 

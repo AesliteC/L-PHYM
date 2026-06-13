@@ -9,6 +9,12 @@ __pycache__
 out/
 build
 stage1_artifacts/
+AGENT.md
+AGENTS.md
+CODEX.md
+CLAUDE.md
+.codex/
+.claude/
 
 *.h5
 *.pth

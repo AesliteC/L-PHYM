@@ -98,9 +98,25 @@ class Stage1RealTrainTests(unittest.TestCase):
             end_token_id=512,
         )
 
-        self.assertEqual(metrics["end_tokens"], 2)
+        self.assertEqual(metrics["end_tokens"], 1)
         self.assertLess(metrics["end_loss"], 0.1)
         self.assertGreater(float(loss), metrics["ce_loss"])
+
+    def test_loss_and_metrics_supervises_end_token_only_once_per_timestep(self):
+        from Script.stage1.train_real_text_gpt import compute_loss_and_metrics
+
+        logits = torch.zeros((1, 3, 4, 514), dtype=torch.float32)
+        targets = torch.tensor([[[7, 8, 9, 10], [513, 513, 513, 513], [513, 513, 513, 513]]], dtype=torch.long)
+        logits[:, :, :, 512] = 10.0
+
+        _, metrics = compute_loss_and_metrics(
+            logits,
+            targets,
+            end_token_weight=0.25,
+            end_token_id=512,
+        )
+
+        self.assertEqual(metrics["end_tokens"], 1)
 
     def test_loss_and_metrics_can_ignore_prefix_tokens_with_target_mask(self):
         from Script.stage1.train_real_text_gpt import compute_loss_and_metrics
@@ -169,6 +185,31 @@ class Stage1RealTrainTests(unittest.TestCase):
             self.assertEqual(int(item["segment_idx"]), 0)
             self.assertEqual(int(item["num_segments"]), 1)
             self.assertEqual(float(item["segment_progress"]), 0.0)
+
+    def test_real_cache_dataset_infers_end_mask_for_legacy_cache(self):
+        from Script.stage1.train_real_text_gpt import RealStage1CacheDataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "cache.pt"
+            torch.save(
+                {
+                    "latents": torch.zeros((1, 5, 768), dtype=torch.float32),
+                    "indices": torch.tensor([[[1, 1, 1, 1], [2, 2, 2, 2], [513, 513, 513, 513], [513, 513, 513, 513], [513, 513, 513, 513]]]),
+                    "text_features": torch.zeros((1, 8, 1024), dtype=torch.float32),
+                    "text_masks": torch.ones((1, 8), dtype=torch.bool),
+                    "target_masks": torch.tensor([[True, True, False, False, False]], dtype=torch.bool),
+                    "captions": ["walk"],
+                    "sequence_ids": ["seq"],
+                    "window_ranges": [(0, 2)],
+                    "sample_ids": [["000001"]],
+                    "config": {},
+                },
+                path,
+            )
+
+            item = RealStage1CacheDataset(str(path))[0]
+
+            self.assertTrue(torch.equal(item["end_mask"], torch.tensor([False, False, True, False, False])))
 
     def test_loss_and_metrics_respects_explicit_end_mask(self):
         from Script.stage1.train_real_text_gpt import compute_loss_and_metrics

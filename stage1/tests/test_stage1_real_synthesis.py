@@ -312,6 +312,76 @@ class Stage1RealSynthesisTests(unittest.TestCase):
             self.assertGreater(summary["failed_sequences"], 0)
             self.assertGreater(summary["attempted_sequences"], summary["num_sequences"])
 
+    def test_caption_filter_prefer_atomic_selects_simpler_caption(self):
+        from Script.stage1.synthesize_long_humanml3d import synthesize_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            root = _write_mixed_transition_humanml_fixture(tmp)
+            target_text = root / "texts" / "000001.txt"
+            target_text.write_text(
+                "\n".join(
+                    [
+                        "a person walks then turns around#a/DET person/NOUN walk/VERB then/ADV turn/VERB around/ADV#0.0#0.0",
+                        "a person walks forward#a/DET person/NOUN walk/VERB forward/ADV#0.0#0.0",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            synthesize_dataset(
+                humanml_root=root,
+                split="train",
+                num_sequences=1,
+                min_clips=2,
+                max_clips=2,
+                seed=0,
+                candidate_pool=3,
+                transition_max_score=0.35,
+                blend_frames=2,
+                caption_joiner=" then ",
+                caption_filter_mode="prefer_atomic",
+                output_dir=tmp / "out",
+            )
+
+            rows = [json.loads(line) for line in (tmp / "out" / "manifest.jsonl").read_text().splitlines()]
+            all_captions = [caption for row in rows for caption in row["clip_captions"]]
+            self.assertIn("a person walks forward", all_captions)
+            self.assertNotIn("a person walks then turns around", all_captions)
+
+    def test_caption_filter_atomic_removes_samples_without_atomic_caption(self):
+        from Script.stage1.synthesize_long_humanml3d import synthesize_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            root = _write_mixed_transition_humanml_fixture(tmp)
+            for sample_id in ("000001", "000002"):
+                (root / "texts" / f"{sample_id}.txt").write_text(
+                    "a person walks then turns#a/DET person/NOUN walk/VERB then/ADV turn/VERB#0.0#0.0\n",
+                    encoding="utf-8",
+                )
+            (root / "texts" / "000003.txt").write_text(
+                "a person jumps#a/DET person/NOUN jump/VERB#0.0#0.0\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "not enough valid clips"):
+                synthesize_dataset(
+                    humanml_root=root,
+                    split="train",
+                    num_sequences=1,
+                    min_clips=2,
+                    max_clips=2,
+                    seed=0,
+                    candidate_pool=3,
+                    transition_max_score=0.35,
+                    blend_frames=2,
+                    caption_joiner=" then ",
+                    caption_filter_mode="atomic",
+                    output_dir=tmp / "out",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

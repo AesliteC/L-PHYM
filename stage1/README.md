@@ -369,6 +369,42 @@ python Script/stage1/run_text_gpt_comparison.py \
 
 这里 baseline 和 finetuned 使用相同 top-p 采样、相同文本分段和相同长度设置；baseline 默认不使用 progress feature，因为原始 checkpoint 没有见过这个条件。当前实验里 `--progress-scale 0.5` 比 `1.0` 的 rollout 更稳，同时仍能缓解 baseline 容易早停的问题。
 
+最终 Stage1 对比包建议使用统一 suite 脚本。它在同一组长文本 prompt 下收集 baseline GPT、微调 GPT、retrieval-only token backup，以及可选的外部 LLM response backup，并统一输出 BVH 工程指标：
+
+```bash
+python Script/stage1/run_stage1_model_suite.py \
+  --run-id stage1_suite_real \
+  --finetuned-checkpoint stage1_artifacts/checkpoints/stage1_real/best_val.pth \
+  --backup-cache stage1_artifacts/gpt_cache_filtered_cache_stage1_20260612_174908/train_cache.pt \
+  --base-data moconvq_base.data \
+  --motion-dataset simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --max-length 120 \
+  --context-size 30 \
+  --chunk-size 20 \
+  --top-p 0.95 \
+  --progress-scale 0.5 \
+  --expected-min-frames 1200 \
+  --gpu 0
+```
+
+主要输出位于 `stage1_artifacts/model_suite/<run_id>/`：
+
+```text
+prompts.tsv
+bvh/*.bvh
+bvh/*.log
+summary_metrics.json
+suite_summary.json
+llm_backup/*/prompt.txt
+llm_backup/*/retrieval_tokens.json
+llm_backup/*/retrieval_validation.json
+```
+
+如果已经手动调用外部 LLM 得到 JSON response，可以把 prompt 名到 response 文件的映射写成一个 JSON object，并追加 `--llm-response-map responses.json`。suite 会先用本地 validator 校验 token，再解码成 `backup_llm` BVH。当前 `summary_metrics.json` 仍然只是 Stage1 工程诊断，不替代 MoConVQ 论文使用的 HumanML3D FID/R-precision。
+
+`--motion-dataset` 建议显式传入，尤其是在临时 worktree 或脚本目录外运行时。backup retrieval 分支默认启用 `--backup-trim-repeat-runs`，用于截断检索复制带来的超长连续相同 RVQ tuple；修复数量会记录在每个 `retrieval_validation.json` 里。这是为了保证 token 文件可解码，不代表语义质量已经提升。
+
 ### 7. 渲染 BVH 为 MP4
 
 ```bash
@@ -435,6 +471,7 @@ Script/stage1/synthesize_long_humanml3d.py
 Script/stage1/build_real_moconvq_gpt_cache.py
 Script/stage1/train_real_text_gpt.py
 Script/stage1/generate_long_motion.py
+Script/stage1/run_stage1_model_suite.py
 Script/stage1/render_bvh_to_mp4.py
 ```
 

@@ -105,6 +105,8 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--progress-conditioning", choices=("none", "scalar", "auto"), default="auto")
     parser.add_argument("--baseline-progress-conditioning", choices=("none", "scalar", "auto"), default="none")
     parser.add_argument("--progress-scale", type=float, default=1.0)
+    parser.add_argument("--progress-context-size", type=int, default=None)
+    parser.add_argument("--progress-prefix-cap", type=int, default=None)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--bvh-dir", default="")
@@ -184,6 +186,10 @@ def main(argv: Iterable[str] | None = None) -> None:
                     "--seed",
                     str(args.seed),
                 ]
+                if args.progress_context_size is not None:
+                    command.extend(["--progress-context-size", str(args.progress_context_size)])
+                if args.progress_prefix_cap is not None:
+                    command.extend(["--progress-prefix-cap", str(args.progress_prefix_cap)])
                 if args.allow_early_stop:
                     command.append("--allow-early-stop")
                 if args.segment_length is not None:
@@ -255,6 +261,8 @@ def main(argv: Iterable[str] | None = None) -> None:
             "progress_conditioning": args.progress_conditioning,
             "baseline_progress_conditioning": args.baseline_progress_conditioning,
             "progress_scale": args.progress_scale,
+            "progress_context_size": args.progress_context_size,
+            "progress_prefix_cap": args.progress_prefix_cap,
             "seed": args.seed,
             "max_length": args.max_length,
             "generation_mode": args.generation_mode,

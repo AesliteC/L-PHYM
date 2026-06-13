@@ -57,6 +57,8 @@ def sample_latents_rolling(
     temperature: float = 1.0,
     progress_conditioning: str = "none",
     progress_scale: float = 1.0,
+    progress_context_size: int | None = None,
+    progress_prefix_cap: int | None = None,
 ) -> torch.Tensor:
     """Generate arbitrary-length latent sequences using fixed-size GPT contexts."""
     if max_length < 1:
@@ -88,8 +90,20 @@ def sample_latents_rolling(
             pre_latent = generated[:, -effective_context:, :]
             context_len = int(pre_latent.shape[1])
         sample_length = current_chunk + 1
-        sampled, _ = model.sample(
+        step_clip_feature = add_progress_to_clip_feature(
             clip_feature,
+            mode=progress_conditioning,
+            segment_idx=0,
+            num_segments=1,
+            segment_progress=0.0,
+            prefix_lengths=min(context_len, progress_prefix_cap) if progress_prefix_cap is not None else context_len,
+            context_size=progress_context_size if progress_context_size is not None else context_size,
+            scale=progress_scale,
+            has_segment_metadata=True,
+            is_segmented=False,
+        )
+        sampled, _ = model.sample(
+            step_clip_feature,
             bert_feature,
             bert_mask,
             if_categorial=categorical,
@@ -258,6 +272,8 @@ def sample_latents_segmented(
     temperature: float = 1.0,
     progress_conditioning: str = "auto",
     progress_scale: float = 1.0,
+    progress_context_size: int | None = None,
+    progress_prefix_cap: int | None = None,
 ) -> torch.Tensor:
     if not text_segments:
         raise ValueError("text_segments must not be empty")
@@ -286,8 +302,15 @@ def sample_latents_segmented(
             segment_idx=segment_idx,
             num_segments=total_segments,
             segment_progress=float(segment_idx / max(total_segments - 1, 1)) if total_segments > 1 else 0.0,
-            prefix_lengths=0 if generated is None else min(int(generated.shape[1]), int(context_size or model.get_block_size() - 1)),
-            context_size=context_size,
+            prefix_lengths=0
+            if generated is None
+            else min(
+                int(generated.shape[1]),
+                int(progress_prefix_cap)
+                if progress_prefix_cap is not None
+                else int(context_size or model.get_block_size() - 1),
+            ),
+            context_size=progress_context_size if progress_context_size is not None else context_size,
             scale=progress_scale,
             has_segment_metadata=True,
             is_segmented=True,
@@ -320,6 +343,7 @@ def main():
     parser.add_argument("--text", required=True)
     parser.add_argument("--output-bvh", required=True)
     parser.add_argument("--base-data", default="moconvq_base.data")
+    parser.add_argument("--motion-dataset", default="")
     parser.add_argument("--text-encoder", choices=("t5", "hash"), default="t5")
     parser.add_argument("--text-model", default="t5-large")
     parser.add_argument("--max-text-length", type=int, default=256)
@@ -337,6 +361,8 @@ def main():
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--progress-conditioning", choices=PROGRESS_CONDITIONING_CHOICES, default="auto")
     parser.add_argument("--progress-scale", type=float, default=1.0)
+    parser.add_argument("--progress-context-size", type=int, default=None)
+    parser.add_argument("--progress-prefix-cap", type=int, default=None)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -351,7 +377,11 @@ def main():
     ptu.init_gpu(True, gpu_id=args.gpu)
     from Script.stage1.real_moconvq_cache import build_loaded_moconvq_agent
 
-    agent = build_loaded_moconvq_agent(gpu=args.gpu, base_data=Path(args.base_data))
+    agent = build_loaded_moconvq_agent(
+        gpu=args.gpu,
+        base_data=Path(args.base_data),
+        motion_dataset=Path(args.motion_dataset) if args.motion_dataset else None,
+    )
     agent.eval()
 
     model = build_text_gpt_model(gpt_config(), device=ptu.device, base_data_path=args.base_data)
@@ -388,6 +418,8 @@ def main():
             temperature=args.temperature,
             progress_conditioning=args.progress_conditioning,
             progress_scale=args.progress_scale,
+            progress_context_size=args.progress_context_size,
+            progress_prefix_cap=args.progress_prefix_cap,
         )
     else:
         segments = split_text_segments(args.text, joiner=args.segment_joiner)
@@ -416,6 +448,8 @@ def main():
             temperature=args.temperature,
             progress_conditioning=args.progress_conditioning,
             progress_scale=args.progress_scale,
+            progress_context_size=args.progress_context_size,
+            progress_prefix_cap=args.progress_prefix_cap,
         )
     dconv = agent.posterior.decoder.decode_dynamic(cur_embedding)
 

@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import random
+import re
 import time
 
 import h5py
@@ -19,6 +20,11 @@ HIP_IDS = (2, 1)
 SHOULDER_IDS = (17, 16)
 FOOT_IDS = (8, 11, 7, 10)
 UP = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+CAPTION_FILTER_MODE_CHOICES = ("none", "prefer_atomic", "atomic")
+MULTI_ACTION_CAPTION_RE = re.compile(
+    r"\b(and then|thens?|while|before|after|afterward|afterwards|followed by|subsequently|next)\b",
+    re.IGNORECASE,
+)
 
 
 def _normalize(vec: np.ndarray, fallback: np.ndarray) -> np.ndarray:
@@ -99,17 +105,74 @@ def align_clip_to_previous(prev_joints: np.ndarray, next_joints: np.ndarray, ble
     return aligned.astype(np.float32)
 
 
-def _choose_caption(captions: list[dict[str, str]], fallback: str) -> str:
+def _caption_text(caption: dict[str, str], fallback: str) -> str:
+    text = str(caption.get("raw") or caption.get("processed") or fallback).strip()
+    return text or fallback
+
+
+def caption_word_count(caption: str) -> int:
+    return len(re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", caption))
+
+
+def caption_complexity_score(caption: str, max_caption_words: int = 0) -> int:
+    """Heuristic score for whether a caption already describes multiple actions."""
+
+    text = caption.strip()
+    score = len(MULTI_ACTION_CAPTION_RE.findall(text))
+    sentence_count = len([part for part in re.split(r"[.!?]+", text) if part.strip()])
+    if sentence_count > 1:
+        score += sentence_count - 1
+    if max_caption_words > 0 and caption_word_count(text) > max_caption_words:
+        score += caption_word_count(text) - max_caption_words
+    return int(score)
+
+
+def is_atomic_caption(caption: str, max_caption_words: int = 0) -> bool:
+    return caption_complexity_score(caption, max_caption_words=max_caption_words) == 0
+
+
+def _choose_caption(
+    captions: list[dict[str, str]],
+    fallback: str,
+    filter_mode: str = "none",
+    max_caption_words: int = 0,
+) -> str | None:
+    if filter_mode not in CAPTION_FILTER_MODE_CHOICES:
+        raise ValueError(f"unknown caption filter mode: {filter_mode}")
     if not captions:
-        return fallback
-    return str(captions[0].get("raw") or captions[0].get("processed") or fallback)
+        return fallback if filter_mode != "atomic" or is_atomic_caption(fallback, max_caption_words) else None
+    candidates = [_caption_text(caption, fallback) for caption in captions]
+    if filter_mode == "none":
+        return candidates[0]
+    ranked = sorted(
+        candidates,
+        key=lambda text: (caption_complexity_score(text, max_caption_words), caption_word_count(text), text),
+    )
+    if filter_mode == "prefer_atomic":
+        return ranked[0]
+    for candidate in ranked:
+        if is_atomic_caption(candidate, max_caption_words=max_caption_words):
+            return candidate
+    return None
 
 
-def _load_clip(catalog: HumanML3DCatalog, sample_id: str) -> tuple[np.ndarray, np.ndarray, str]:
+def _load_clip(
+    catalog: HumanML3DCatalog,
+    sample_id: str,
+    caption_filter_mode: str = "none",
+    max_caption_words: int = 0,
+) -> tuple[np.ndarray, np.ndarray, str]:
     sample = catalog.by_id[sample_id]
     joints = np.load(sample.joints_path).astype(np.float32)
     vecs = np.load(sample.vecs_path).astype(np.float32)
-    caption = _choose_caption(sample.captions, sample_id)
+    caption = _choose_caption(
+        sample.captions,
+        sample_id,
+        filter_mode=caption_filter_mode,
+        max_caption_words=max_caption_words,
+    )
+    if caption is None:
+        raise ValueError(f"sample {sample_id} has no caption accepted by mode {caption_filter_mode}")
     return joints, vecs, caption
 
 
@@ -133,7 +196,7 @@ def _sample_candidates(
     return rng.sample(candidates, count) if count < len(candidates) else list(candidates)
 
 
-def _is_valid_clip(catalog: HumanML3DCatalog, sample_id: str) -> bool:
+def _has_valid_motion_data(catalog: HumanML3DCatalog, sample_id: str) -> bool:
     sample = catalog.by_id[sample_id]
     joints = np.load(sample.joints_path, mmap_mode="r")
     vecs = np.load(sample.vecs_path, mmap_mode="r")
@@ -144,6 +207,24 @@ def _is_valid_clip(catalog: HumanML3DCatalog, sample_id: str) -> bool:
         and vecs.ndim == 2
         and vecs.shape[1] == 263
         and vecs.shape[0] >= 2
+    )
+
+
+def _has_accepted_caption(
+    catalog: HumanML3DCatalog,
+    sample_id: str,
+    caption_filter_mode: str,
+    max_caption_words: int,
+) -> bool:
+    sample = catalog.by_id[sample_id]
+    return (
+        _choose_caption(
+            sample.captions,
+            sample_id,
+            filter_mode=caption_filter_mode,
+            max_caption_words=max_caption_words,
+        )
+        is not None
     )
 
 
@@ -162,6 +243,8 @@ def synthesize_dataset(
     allow_forced_transitions: bool = False,
     max_sequence_attempts: int | None = None,
     drop_overlap_frames: int = 1,
+    caption_filter_mode: str = "none",
+    max_caption_words: int = 0,
 ) -> dict[str, object]:
     catalog = load_humanml3d_catalog(humanml_root)
     if split not in catalog.split_ids:
@@ -170,13 +253,27 @@ def synthesize_dataset(
         raise ValueError("invalid clip count bounds")
     if drop_overlap_frames < 0:
         raise ValueError("drop_overlap_frames must be non-negative")
+    if caption_filter_mode not in CAPTION_FILTER_MODE_CHOICES:
+        raise ValueError(f"unknown caption filter mode: {caption_filter_mode}")
+    if max_caption_words < 0:
+        raise ValueError("max_caption_words must be non-negative")
 
     rng = random.Random(seed)
     split_ids = list(catalog.split_ids[split])
-    ids = [sample_id for sample_id in split_ids if _is_valid_clip(catalog, sample_id)]
-    filtered_invalid_clips = len(split_ids) - len(ids)
+    motion_valid_ids = [sample_id for sample_id in split_ids if _has_valid_motion_data(catalog, sample_id)]
+    ids = [
+        sample_id
+        for sample_id in motion_valid_ids
+        if _has_accepted_caption(catalog, sample_id, caption_filter_mode, max_caption_words)
+    ]
+    filtered_invalid_clips = len(split_ids) - len(motion_valid_ids)
+    filtered_caption_clips = len(motion_valid_ids) - len(ids)
     if len(ids) < max_clips:
-        raise ValueError(f"not enough valid clips in split {split}: {len(ids)}")
+        raise ValueError(
+            f"not enough valid clips in split {split}: {len(ids)} after caption_filter_mode="
+            f"{caption_filter_mode}; filtered_invalid={filtered_invalid_clips}, "
+            f"filtered_caption={filtered_caption_clips}"
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.jsonl"
     h5_path = output_dir / "long_sequences.h5"
@@ -222,6 +319,12 @@ def synthesize_dataset(
         drop_overlap_frames=drop_overlap_frames,
         allow_forced_transitions=allow_forced_transitions,
         max_attempts=max_attempts,
+        caption_filter_mode=caption_filter_mode,
+        max_caption_words=max_caption_words,
+        motion_valid_clips=len(motion_valid_ids),
+        caption_accepted_clips=len(ids),
+        filtered_invalid_clips=filtered_invalid_clips,
+        filtered_caption_clips=filtered_caption_clips,
     )
 
     with h5py.File(h5_path, "w") as h5:
@@ -242,14 +345,23 @@ def synthesize_dataset(
             start_frames: list[int | None] = []
             end_frames: list[int | None] = []
             dropped_prefix_frames: list[int] = []
+            clip_caption_complexity: list[int] = []
+            clip_caption_is_atomic: list[bool] = []
             clip_boundaries: list[tuple[int, int]] = []
 
             first_id = rng.choice(ids)
-            first_joints, first_vecs, first_caption = _load_clip(catalog, first_id)
+            first_joints, first_vecs, first_caption = _load_clip(
+                catalog,
+                first_id,
+                caption_filter_mode=caption_filter_mode,
+                max_caption_words=max_caption_words,
+            )
             merged_joints = [first_joints]
             merged_vecs = [first_vecs]
             sample_ids.append(first_id)
             clip_captions.append(first_caption)
+            clip_caption_complexity.append(caption_complexity_score(first_caption, max_caption_words))
+            clip_caption_is_atomic.append(is_atomic_caption(first_caption, max_caption_words))
             sample = catalog.by_id[first_id]
             source_paths.append(str(sample.source_path) if sample.source_path is not None else None)
             start_frames.append(sample.start_frame)
@@ -270,7 +382,12 @@ def synthesize_dataset(
                     used_ids=set(sample_ids),
                     previous_id=sample_ids[-1],
                 ):
-                    candidate_joints, _, _ = _load_clip(catalog, candidate_id)
+                    candidate_joints, _, _ = _load_clip(
+                        catalog,
+                        candidate_id,
+                        caption_filter_mode=caption_filter_mode,
+                        max_caption_words=max_caption_words,
+                    )
                     parts = transition_score(prev, candidate_joints)
                     if best_score is None or parts["total"] < best_score:
                         best_id = candidate_id
@@ -296,7 +413,12 @@ def synthesize_dataset(
                     sequence_failed = True
                     break
 
-                candidate_joints, candidate_vecs, candidate_caption = _load_clip(catalog, best_id)
+                candidate_joints, candidate_vecs, candidate_caption = _load_clip(
+                    catalog,
+                    best_id,
+                    caption_filter_mode=caption_filter_mode,
+                    max_caption_words=max_caption_words,
+                )
                 aligned_joints = align_clip_to_previous(prev, candidate_joints, blend_frames)
                 drop_count = min(int(drop_overlap_frames), max(len(aligned_joints) - 2, 0))
                 aligned_joints_to_store = aligned_joints[drop_count:]
@@ -326,6 +448,8 @@ def synthesize_dataset(
                 merged_vecs.append(candidate_vecs_to_store)
                 sample_ids.append(best_id)
                 clip_captions.append(candidate_caption)
+                clip_caption_complexity.append(caption_complexity_score(candidate_caption, max_caption_words))
+                clip_caption_is_atomic.append(is_atomic_caption(candidate_caption, max_caption_words))
                 transition_scores.append(float(best_score))
                 transition_forced.append(bool(forced))
                 sample = catalog.by_id[best_id]
@@ -357,6 +481,8 @@ def synthesize_dataset(
                 "start_frames": start_frames,
                 "end_frames": end_frames,
                 "dropped_prefix_frames": dropped_prefix_frames,
+                "clip_caption_complexity": clip_caption_complexity,
+                "clip_caption_is_atomic": clip_caption_is_atomic,
             }
             rows.append(row)
 
@@ -401,6 +527,17 @@ def synthesize_dataset(
         "skipped_transition_score_mean": float(np.mean(skipped_scores)) if skipped_scores else 0.0,
         "skipped_transition_score_max": float(np.max(skipped_scores)) if skipped_scores else 0.0,
         "filtered_invalid_clips": filtered_invalid_clips,
+        "filtered_caption_clips": filtered_caption_clips,
+        "caption_filter_mode": caption_filter_mode,
+        "max_caption_words": max_caption_words,
+        "non_atomic_clip_captions": int(
+            sum(
+                1
+                for row in rows
+                for is_atomic in row.get("clip_caption_is_atomic", [])
+                if not is_atomic
+            )
+        ),
         "config": {
             "humanml_root": str(humanml_root),
             "split": split,
@@ -413,6 +550,8 @@ def synthesize_dataset(
             "blend_frames": blend_frames,
             "drop_overlap_frames": drop_overlap_frames,
             "caption_joiner": caption_joiner,
+            "caption_filter_mode": caption_filter_mode,
+            "max_caption_words": max_caption_words,
             "allow_forced_transitions": allow_forced_transitions,
             "max_sequence_attempts": max_sequence_attempts,
         },
@@ -435,6 +574,8 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--blend-frames", type=int, default=5)
     parser.add_argument("--drop-overlap-frames", type=int, default=1)
     parser.add_argument("--caption-joiner", default=" then ")
+    parser.add_argument("--caption-filter-mode", choices=CAPTION_FILTER_MODE_CHOICES, default="none")
+    parser.add_argument("--max-caption-words", type=int, default=0)
     parser.add_argument("--output-dir", default="stage1_artifacts/long_humanml3d/train")
     parser.add_argument("--allow-forced-transitions", action="store_true")
     parser.add_argument("--max-sequence-attempts", type=int, default=None)
@@ -452,6 +593,8 @@ def main(argv: Iterable[str] | None = None) -> None:
         blend_frames=args.blend_frames,
         drop_overlap_frames=args.drop_overlap_frames,
         caption_joiner=args.caption_joiner,
+        caption_filter_mode=args.caption_filter_mode,
+        max_caption_words=args.max_caption_words,
         output_dir=Path(args.output_dir),
         allow_forced_transitions=args.allow_forced_transitions,
         max_sequence_attempts=args.max_sequence_attempts,

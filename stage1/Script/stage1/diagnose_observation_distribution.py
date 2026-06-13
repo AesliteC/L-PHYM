@@ -13,6 +13,7 @@ from Script.stage1.real_moconvq_cache import (
     DEFAULT_MOCONVQ_WORLD_JSON,
     MOCONVQ_BODY_NAMES,
     ROTATION_CALIBRATION_CHOICES,
+    ROTATION_SOURCE_CHOICES,
     build_loaded_moconvq_agent,
     humanml3d_joints_to_moconvq_state,
     moconvq_state_to_observation,
@@ -93,6 +94,7 @@ def diagnose_long_h5_observation_distribution(
     agent,
     fps: int = 20,
     max_sequences: int | None = None,
+    rotation_source: str = "heuristic",
     rotation_calibration: str = "rest",
     world_json_path: Path | str | None = None,
 ) -> dict[str, object]:
@@ -110,9 +112,12 @@ def diagnose_long_h5_observation_distribution(
             if max_sequences is not None and converted >= max_sequences:
                 break
             joints = h5[sequence_id]["joints_22"][:]
+            joint_vecs = h5[sequence_id]["joint_vecs_263"][:] if "joint_vecs_263" in h5[sequence_id] else None
             state = humanml3d_joints_to_moconvq_state(
                 joints,
+                joint_vecs_263=joint_vecs,
                 fps=fps,
+                rotation_source=rotation_source,
                 rotation_calibration=rotation_calibration,
                 world_json_path=world_json_path,
             )
@@ -137,6 +142,7 @@ def diagnose_long_h5_observation_distribution(
         "long_h5": str(long_h5_path),
         "fps": fps,
         "max_sequences": max_sequences,
+        "rotation_source": rotation_source,
         "rotation_calibration": rotation_calibration,
         "world_json": str(world_json_path) if world_json_path is not None else str(DEFAULT_MOCONVQ_WORLD_JSON),
         "converted_sequences": converted,
@@ -162,6 +168,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--max-sequences", type=int, default=20)
+    parser.add_argument("--rotation-source", choices=ROTATION_SOURCE_CHOICES, default="heuristic")
     parser.add_argument("--rotation-calibration", choices=ROTATION_CALIBRATION_CHOICES, default="rest")
     parser.add_argument("--world-json", default=str(DEFAULT_MOCONVQ_WORLD_JSON))
     parser.add_argument("--output", default="")
@@ -175,6 +182,7 @@ def main(argv: Iterable[str] | None = None) -> None:
             agent=agent,
             fps=args.fps,
             max_sequences=args.max_sequences,
+            rotation_source=args.rotation_source,
             rotation_calibration=args.rotation_calibration,
             world_json_path=Path(args.world_json),
         )

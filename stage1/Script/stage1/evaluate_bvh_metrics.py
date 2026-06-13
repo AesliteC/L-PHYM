@@ -40,8 +40,10 @@ def load_bvh_motion(path: Path) -> tuple[np.ndarray, float]:
         if stripped:
             rows.append([float(value) for value in stripped.split()])
     motion = np.asarray(rows, dtype=np.float64)
-    if motion.shape[0] != frames:
+    if motion.shape[0] < frames:
         raise ValueError(f"BVH frame count mismatch in {path}: header={frames}, rows={motion.shape[0]}")
+    if motion.shape[0] > frames:
+        motion = motion[:frames]
     if motion.ndim != 2 or motion.shape[1] < 6:
         raise ValueError(f"BVH motion data has unexpected shape in {path}: {motion.shape}")
     return motion, frame_time

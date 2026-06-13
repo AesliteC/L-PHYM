@@ -621,6 +621,40 @@ python Script/stage1/evaluate_bvh_metrics.py \
 
 MoConVQ 论文的正式 Text2Motion 量化指标是 HumanML3D test set 上的 FID 和 R-precision，依赖兼容的 HumanML3D/SMPL motion feature extractor。当前仓库尚未包含这套 evaluator，因此 Stage1 暂时用 BVH 工程指标和视频检查做中间诊断；最终“优于 baseline”的结论仍应补齐 FID/R-precision 或等价的文本-动作匹配评估。
 
+为了避免每次实验只比较单一路线，当前推荐把最终 Stage1 对比实验收敛到统一 suite：
+
+```bash
+python Script/stage1/run_stage1_model_suite.py \
+  --run-id suite_filtered_stage1 \
+  --finetuned-checkpoint stage1_artifacts/checkpoints/filtered_stage1_20260612_181802/best_val.pth \
+  --backup-cache stage1_artifacts/gpt_cache_filtered_cache_stage1_20260612_174908/train_cache.pt \
+  --base-data moconvq_base.data \
+  --motion-dataset simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --max-length 120 \
+  --context-size 30 \
+  --chunk-size 20 \
+  --top-p 0.95 \
+  --progress-scale 0.5 \
+  --expected-min-frames 1200 \
+  --gpu 0
+```
+
+这个脚本会在同一个 `run_id` 下生成：
+
+```text
+baseline_top_p BVH
+finetuned_top_p BVH
+backup_retrieval BVH
+optional backup_llm BVH
+summary_metrics.json
+suite_summary.json
+```
+
+默认 prompt set 覆盖 walk-turn-wave、circle-crouch-stand、walk-jump-dance、sidestep-kick-turn 四类多阶段长文本。也可以用 `--prompts <tsv>` 指定正式报告 prompt。若要评估真实 LLM in-context token planning，把外部 LLM 的 JSON response 保存成文件，并用 `--llm-response-map responses.json` 提供 prompt 名到 response 文件的映射；suite 会调用 `llm_token_planning.py validate` 和 `decode-bvh` 得到 `backup_llm` BVH。
+
+如果从临时 worktree 或仓库外部运行，建议显式传 `--motion-dataset /abs/path/to/simple_motion_data.h5`。MoConVQ 默认 config 里的 `motion_dataset` 是相对路径，显式传入可以避免 decode backup BVH 时依赖当前工作目录。retrieval-only backup 默认会截断超长连续重复 RVQ tuple run，并把 `repeat_repairs` 记录到 `retrieval_validation.json`；这是 decoder 可运行性修复，不应当被解释为语义成功。
+
 长文本动作推荐使用分段生成，让每一段 motion 使用对应局部 caption，而不是每个 rolling chunk 都看同一个完整长文本。分段生成会把上一段末尾的 latent 作为下一段开头的上下文，从而保留动作连续性，同时显式告诉模型当前执行的是哪一段文本。默认 `auto` 会在检测到多段文本时走这条路径；如果没有显式传 `--segment-lengths` 或 `--segment-length`，脚本会把 `--max-length` 自动分配到各文本段：
 
 ```bash

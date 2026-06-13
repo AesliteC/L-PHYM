@@ -37,8 +37,28 @@ class RealStage1CacheDataset(Dataset):
     def __len__(self) -> int:
         return self.length
 
+    @staticmethod
+    def _default_end_mask(indices: torch.Tensor, target_mask: torch.Tensor, pad_index: int = 513) -> torch.Tensor:
+        """Infer the first padding step after the supervised target region.
+
+        Older cache files did not store explicit end masks.  If the user enables
+        end-token loss for those caches, we still want the first padding token
+        after the target region to be supervised as a stop decision.
+        """
+
+        valid_time = indices[:, 0] != pad_index
+        supervised_time = valid_time & target_mask
+        end_mask = torch.zeros_like(target_mask, dtype=torch.bool)
+        if bool(supervised_time.any()):
+            last_target = int(torch.nonzero(supervised_time, as_tuple=False)[-1].item())
+            end_pos = last_target + 1
+            if end_pos < indices.shape[0] and not bool(valid_time[end_pos]):
+                end_mask[end_pos] = True
+        return end_mask
+
     def __getitem__(self, idx: int) -> dict[str, object]:
-        window_size = int(self.cache["indices"][idx].shape[0])
+        indices = torch.as_tensor(self.cache["indices"][idx], dtype=torch.long)
+        window_size = int(indices.shape[0])
         num_segments_value = self.cache.get("num_segments")
         segment_idx_value = self.cache.get("segment_idxs")
         segment_progress_value = self.cache.get("segment_progress")
@@ -53,11 +73,11 @@ class RealStage1CacheDataset(Dataset):
         end_mask = (
             torch.as_tensor(end_masks_value[idx], dtype=torch.bool)
             if end_masks_value is not None
-            else torch.zeros((window_size,), dtype=torch.bool)
+            else self._default_end_mask(indices, target_mask)
         )
         return {
             "latent": torch.as_tensor(self.cache["latents"][idx], dtype=torch.float32),
-            "indices": torch.as_tensor(self.cache["indices"][idx], dtype=torch.long),
+            "indices": indices,
             "text_feature": torch.as_tensor(self.cache["text_features"][idx], dtype=torch.float32),
             "text_mask": torch.as_tensor(self.cache["text_masks"][idx], dtype=torch.bool),
             "target_mask": target_mask,
@@ -183,6 +203,10 @@ def compute_loss_and_metrics(
                 supervised_valid = (targets != ignore_index) & expanded_target_mask
                 follows_supervised = F.pad(supervised_valid[:, :-1, :], (0, 0, 1, 0), value=False)
                 first_padding = padding & follows_supervised
+        if first_padding.shape[-1] > 1:
+            depth0_first_padding = torch.zeros_like(first_padding)
+            depth0_first_padding[..., 0] = first_padding[..., 0]
+            first_padding = depth0_first_padding
         end_tokens = int(first_padding.sum().item())
         if end_tokens > 0:
             end_targets = torch.full(
@@ -316,6 +340,9 @@ def _run_epoch(
                 has_segment_metadata=bool(torch.as_tensor(batch["has_segment_metadata"]).any().item()),
                 is_segmented=False,
             )
+        # During rollout the GPT feeds back latents reconstructed from sampled
+        # RVQ ids.  Training on the same codebook-summed latent space avoids a
+        # train/inference mismatch with the encoder's cached latent_vq tensor.
         gpt_latent = reconstruct_latents_from_rvq_indices(indices, model.embedding)
         context_latent, targets = prepare_autoregressive_inputs(gpt_latent, indices)
 

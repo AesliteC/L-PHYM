@@ -399,6 +399,69 @@ class Stage1RealGenerateTests(unittest.TestCase):
         self.assertAlmostEqual(float(conditioned[0, 0]), 0.0)
         self.assertAlmostEqual(float(conditioned[1, 0]), 1.0)
 
+    def test_segmented_generation_can_match_training_progress_prefix_scale(self):
+        import torch
+
+        import Script.stage1.generate_long_motion as generate
+
+        class FakeModel:
+            def get_block_size(self):
+                return 52
+
+        clip_features = []
+
+        def fake_text_encoder(text, model_name, max_length, device):
+            return torch.zeros((1, max_length, 1024)), torch.zeros((1, max_length), dtype=torch.bool)
+
+        def fake_with_prefix(
+            model,
+            clip_feature,
+            bert_feature,
+            bert_mask,
+            max_length,
+            prefix_latents,
+            context_size,
+            chunk_size,
+            categorical,
+            allow_early_stop,
+            top_k=50,
+            top_p=1.0,
+            temperature=1.0,
+            **kwargs,
+        ):
+            clip_features.append(clip_feature.clone())
+            return torch.ones((1, max_length, 768), dtype=torch.float32)
+
+        old_encode = generate.encode_text_with_t5
+        old_with_prefix = generate.sample_latents_with_prefix
+        generate.encode_text_with_t5 = fake_text_encoder
+        generate.sample_latents_with_prefix = fake_with_prefix
+        try:
+            generate.sample_latents_segmented(
+                model=FakeModel(),
+                clip_feature=torch.zeros((1, 512)),
+                text_segments=["walk", "turn"],
+                text_encoder="t5",
+                text_model="fake-t5",
+                max_text_length=4,
+                device="cpu",
+                segment_length=30,
+                segment_lengths=[30, 30],
+                context_size=30,
+                chunk_size=20,
+                categorical=False,
+                allow_early_stop=False,
+                progress_context_size=51,
+                progress_prefix_cap=25,
+            )
+        finally:
+            generate.encode_text_with_t5 = old_encode
+            generate.sample_latents_with_prefix = old_with_prefix
+
+        self.assertEqual(len(clip_features), 2)
+        self.assertAlmostEqual(float(clip_features[0][0, 3]), 0.0)
+        self.assertAlmostEqual(float(clip_features[1][0, 3]), 25.0 / 51.0, places=6)
+
     def test_auto_generation_mode_selects_segmented_for_joined_text(self):
         from Script.stage1.generate_long_motion import resolve_generation_mode
 

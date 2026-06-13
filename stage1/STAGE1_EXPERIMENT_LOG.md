@@ -1160,3 +1160,2118 @@ Interpretation:
   default for the segment-progress checkpoint.
 - Current recommended comparison command should use `--progress-scale 0.5` for
   the finetuned model and keep `--baseline-progress-conditioning none`.
+
+## 2026-06-12: Loss audit and conservative retraining plan
+
+### Purpose
+
+The Stage1 training loss was inspected again before launching the next
+experiment.  The main autoregressive objective is already aligned with the
+MoConVQ GPT sampling path:
+
+- motion history is fed as codebook-reconstructed RVQ latents rather than the
+  encoder's cached `latent_vq`, matching rollout-time feedback;
+- the temporal context is shifted by one step, so the current motion token is
+  not visible while predicting itself;
+- the first four RVQ depth logits supervise the four predicted RVQ code ids;
+- `target_mask` excludes prefix/context-only tokens from CE, KL and accuracy;
+- the baseline KL teacher receives the original progress-free condition vector.
+
+Two smaller issues were fixed:
+
+- legacy caches that do not contain explicit `end_masks` now infer the first
+  padding step after the supervised target region;
+- end-token auxiliary loss is now applied only once per motion timestep, at
+  RVQ depth 0, rather than being repeated across all four RVQ depths.
+
+### Verification
+
+Commands run:
+
+```bash
+source /home/chenjie/miniconda3/etc/profile.d/conda.sh
+conda activate moconvq
+cd /home/chenjie/cc/robotics/MoConVQ
+
+python -m py_compile \
+  Script/stage1/train_real_text_gpt.py \
+  tests/test_stage1_real_train.py
+
+python -m unittest tests.test_stage1_real_train -v
+
+python -m unittest \
+  tests.test_stage1_gpt \
+  tests.test_stage1_real_cache \
+  tests.test_stage1_real_generate \
+  tests.test_stage1_text_gpt_comparison \
+  tests.test_stage1_real_train \
+  -v
+```
+
+Result:
+
+- `tests.test_stage1_real_train`: 18 tests passed.
+- Related Stage1 GPT/cache/generation/comparison/training tests: 50 tests
+  passed.
+- A 1-batch smoke train completed forward/backward/checkpoint writing.
+
+### Next experiment
+
+The next run reuses the current segment-prefix cache, because the cache schema is
+compatible with the loss fix.  The goal is to reduce the previous rollout
+instability while keeping the segment-progress benefit:
+
+```text
+run id: lossfix_reg_stage1_20260612_155519
+train cache: stage1_artifacts/gpt_cache_segment_progress_segment_progress_stage1_20260612_135307/train_cache.pt
+val cache: stage1_artifacts/gpt_cache_segment_progress_segment_progress_stage1_20260612_135307/val_cache.pt
+train_scope: temporal_base_head
+epochs: 20
+batch_size: 12
+lr: 5e-6
+depth_weights: 1.0,0.7,0.4,0.2
+baseline_kl_weight: 0.1
+kl_temperature: 2.0
+end_token_weight: 0.01
+student progress conditioning: auto
+teacher progress conditioning: none
+progress_scale: 0.5
+```
+
+Expected comparison after training:
+
+- plot loss/accuracy curves;
+- evaluate `best_val.pth` against `text_generation_GPT.pth` with top-p sampling;
+- render side-by-side videos;
+- report frame count, duration, root path/displacement, pose velocity, pose
+  variance and long-lag repetition diagnostics.
+
+If this run still improves length but not qualitative/metric quality, the next
+stage will move from loss tuning to data/protocol diagnosis in this order:
+
+1. Check synthetic HumanML3D boundary quality:
+   - rerun transition diagnostics on train/val;
+   - inspect the worst root/yaw/foot-velocity boundaries;
+   - compare whether unstable BVH outputs correlate with high-boundary-error
+     training samples.
+2. Check retarget/observation distribution:
+   - compute normalized MoConVQ observation z-scores against `moconvq_base.data`;
+   - identify dimensions/bodies whose converted HumanML3D observations are far
+     outside the MoConVQ training distribution.
+3. Check caption-window alignment:
+   - verify each cache window uses the local segment caption rather than the
+     whole long caption when `segment_prefix` is enabled;
+   - sample windows and inspect `prefix_range`, `target_range`, `segment_idx`,
+     `caption` and `target_mask`.
+4. Check rollout error accumulation:
+   - compare teacher-forced validation loss with generated BVH metrics;
+   - test shorter per-segment generation, smaller context, and lower progress
+     scale to see whether instability grows with rollout length.
+5. Check data coverage:
+   - summarize action/caption diversity and segment-count distribution;
+   - if coverage is weak, rebuild the synthetic dataset with stricter
+     transition filtering or an LLM-assisted segment planner rather than simple
+     sampled concatenation.
+
+## 2026-06-12: Loss-fix retraining, top-p comparison, and data diagnosis
+
+### Training outcome
+
+The conservative loss-fix run completed:
+
+```text
+run id: lossfix_reg_stage1_20260612_155519
+checkpoint dir: stage1_artifacts/checkpoints/lossfix_reg_stage1_20260612_155519
+curve dir: stage1_artifacts/figures/lossfix_reg_stage1_20260612_155519
+train cache: stage1_artifacts/gpt_cache_segment_progress_segment_progress_stage1_20260612_135307/train_cache.pt
+val cache: stage1_artifacts/gpt_cache_segment_progress_segment_progress_stage1_20260612_135307/val_cache.pt
+epochs: 20
+batch size: 12
+lr: 5e-6
+train scope: temporal_base_head
+depth weights: 1.0,0.7,0.4,0.2
+baseline KL weight: 0.1
+end-token weight: 0.01
+progress scale: 0.5
+```
+
+Curve summary:
+
+| Metric | Value |
+|---|---:|
+| best val epoch | 16 |
+| best val loss | 3.5312 |
+| last train loss | 2.8740 |
+| last train CE loss | 2.0333 |
+| last train token accuracy | 0.4348 |
+| last val loss | 3.5501 |
+| last val CE loss | 2.7310 |
+| last val token accuracy | 0.3309 |
+
+Interpretation:
+
+- The run is not underfitting by epoch 20.  Validation loss reaches the best
+  value at epoch 16 and then mildly worsens while train loss continues to fall.
+- Evaluation should use `best_val.pth`, not `last.pth`.
+- More epochs alone are unlikely to fix long-motion rollout quality.
+
+### Top-p comparison against baseline
+
+Comparison artifacts:
+
+```text
+run id: lossfix_reg_stage1_20260612_155519_top_p_len120_scale05
+BVH dir: stage1_artifacts/generated_bvh_compare/lossfix_reg_stage1_20260612_155519_top_p_len120_scale05
+video dir: stage1_artifacts/generated_video_compare/lossfix_reg_stage1_20260612_155519_top_p_len120_scale05
+metrics: stage1_artifacts/generated_bvh_compare/lossfix_reg_stage1_20260612_155519_top_p_len120_scale05/summary_metrics_script.json
+summary: stage1_artifacts/generated_bvh_compare/lossfix_reg_stage1_20260612_155519_top_p_len120_scale05/comparison_summary.md
+```
+
+Generation settings:
+
+- `top_p=0.95`, `top_k=0`, `temperature=1.0`;
+- `max_length=120`;
+- `generation_mode=auto`;
+- `context_size=30`, `chunk_size=20`;
+- finetuned progress conditioning: `auto`;
+- baseline progress conditioning: `none`;
+- finetuned `progress_scale=0.5`;
+- seed: `123`.
+
+Aggregate diagnostics:
+
+| Model | Avg frames | Avg duration | Avg root path | Avg root displacement | Avg pose velocity | Avg pose variance | Lag-20 repeat >0.995 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| baseline top-p | 1500 | 12.50 s | 4.024 | 1.416 | 17.780 | 152.256 | 0.0000 |
+| finetuned top-p | 2316 | 19.30 s | 5.873 | 1.836 | 23.936 | 358.819 | 0.0063 |
+
+Per-prompt frame counts:
+
+| Prompt | Baseline frames | Finetuned frames | Delta |
+|---|---:|---:|---:|
+| `walk_turn_wave` | 1272 | 2736 | +1464 |
+| `circle_crouch_stand` | 1464 | 2280 | +816 |
+| `walk_jump_dance` | 1488 | 2736 | +1248 |
+| `sidestep_kick_turn` | 1776 | 1512 | -264 |
+
+Interpretation:
+
+- The loss-fix/regularized model is much less unstable than the previous
+  segment-progress model: average pose velocity drops from about 53.3 to 23.9,
+  and pose variance drops from about 539.7 to 358.8 under the same
+  `progress_scale=0.5` comparison.
+- It still does not beat baseline overall.  It usually generates longer clips,
+  but pose variance is still more than 2x baseline and one prompt becomes
+  shorter than baseline.
+- This confirms that the next correction should not be "train more epochs" or
+  "tune CE only"; it should diagnose the data and rollout protocol.
+
+### Synthetic HumanML3D boundary quality
+
+The current segment-progress synthesis data already contains boundary
+diagnostics:
+
+| Split | Sequences | Transitions | Avg clips | Avg frames | Forced transitions | Bad transition rate |
+|---|---:|---:|---:|---:|---:|---:|
+| train | 1000 | 1945 | 2.945 | 414.648 | 0 | 1.49% |
+| val | 200 | 398 | 2.990 | 408.210 | 0 | 1.76% |
+
+Boundary metrics are small:
+
+| Split | root gap mean / p95 | yaw gap mean / p95 | foot velocity gap mean / p95 |
+|---|---:|---:|---:|
+| train | 0.0025 / 0.0133 | 0.0110 / 0.0532 | 0.0120 / 0.0554 |
+| val | 0.0026 / 0.0141 | 0.0115 / 0.0565 | 0.0108 / 0.0537 |
+
+Interpretation:
+
+- The simple boundary checks do not support "bad clip stitching" as the main
+  current failure source.  The dataset is still synthetic and semantically
+  imperfect, but the measured root/yaw/foot boundary discontinuities are not
+  large enough to explain the rollout instability by themselves.
+- The next more suspicious part is the HumanML3D-to-MoConVQ retarget and
+  observation distribution.
+
+### Retarget / observation distribution
+
+Observation diagnostics compare converted HumanML3D observations to the
+MoConVQ encoder's `obs_mean/obs_std` from `moconvq_base.data`.
+
+Artifacts:
+
+```text
+stage1_artifacts/diagnostics/lossfix_reg_stage1_20260612_155519/train_observation_distribution_100.json
+stage1_artifacts/diagnostics/lossfix_reg_stage1_20260612_155519/val_observation_distribution_50.json
+stage1_artifacts/diagnostics/lossfix_reg_stage1_20260612_155519/val_observation_distribution_50_none.json
+```
+
+Aggregate z-score diagnostics:
+
+| Data | Calibration | mean abs z | p95 abs z | p99 abs z | frac >5 | frac >10 |
+|---|---|---:|---:|---:|---:|---:|
+| train 100 seq | rest | 0.7055 | 2.5861 | 5.0763 | 1.08% | 0.079% |
+| val 50 seq | rest | 0.6948 | 2.5225 | 4.8894 | 0.90% | 0.074% |
+| val 50 seq | none | 1.3413 | 5.5816 | 19.3859 | 6.60% | 2.481% |
+
+Worst dimensions under `rest` calibration are consistently:
+
+- `local_rot_6d` for `rLowerLeg`, `lLowerLeg`, `rFoot`, `lFoot`, `rToes`,
+  `lToes`;
+- `local_avel` for foot/toes and lower arms.
+
+Interpretation:
+
+- `rotation_calibration=rest` is necessary: removing it makes the converted
+  distribution far worse.
+- The remaining outliers point to the hand-written position-to-rigid-body
+  retarget path.  HumanML3D `new_joints` provides joint positions, not the
+  simulator body local frames used by MoConVQ.  Static rest-pose calibration
+  fixes the largest global mismatch but cannot fully recover physically
+  plausible lower-leg/foot rigid-body rotations and angular velocities.
+
+### Code change from diagnosis
+
+Added optional observation-quality filtering to the cache builder:
+
+- `--max-observation-p99-abs-z`
+- `--max-observation-frac-gt-5`
+- `--max-observation-frac-gt-10`
+
+Default behavior is unchanged.  When thresholds are provided, the builder
+computes per-sequence observation z-score statistics before calling
+`encode_seq_all()` and skips sequences that exceed the thresholds.  Skipped
+sequences are stored in `cache["filtered_sequences"]`; true conversion failures
+remain in the failure log.
+
+Verification:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/real_moconvq_cache.py \
+  tests/test_stage1_real_cache.py \
+  Script/stage1/diagnose_observation_distribution.py \
+  Script/stage1/summarize_bvh_comparison.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_real_cache \
+  tests.test_stage1_observation_diagnostics \
+  tests.test_stage1_bvh_comparison_summary \
+  -v
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_real_train \
+  tests.test_stage1_text_gpt_comparison \
+  tests.test_stage1_real_generate \
+  -v
+```
+
+Results:
+
+- cache/observation/summary tests: 17 passed;
+- train/comparison/generation tests: 30 passed.
+
+### Next experiment
+
+Build a new segment-prefix cache from the same synthesized data with moderate
+observation filtering, then retrain the same conservative GPT setup:
+
+```text
+candidate filter:
+  max_observation_p99_abs_z ~= 6.0
+  max_observation_frac_gt_5 ~= 0.02
+  max_observation_frac_gt_10 ~= 0.003
+```
+
+On the diagnostic subset this would remove approximately 6-11% of sequences,
+depending on the exact threshold and split.  This is conservative enough to
+keep most data while testing whether the lower-leg/foot retarget outliers are
+polluting GPT supervision.
+
+If filtered-cache training still generates longer but lower-quality motions,
+the next priority should be a stronger retarget route through the original
+MoConVQ BVH/character loader (`MotionDataSet.add_bvh_with_character()`) or a
+more conservative data synthesis plan with LLM-assisted segment selection.
+
+## 2026-06-12: Filtered-cache training and top-p rollout comparison
+
+### Purpose
+
+This run tested whether removing converted HumanML3D sequences with outlying
+MoConVQ observation statistics improves Stage1 GPT fine-tuning.  The motivation
+was the previous diagnosis that simple synthetic clip-boundary metrics looked
+acceptable, while the converted observation distribution still had lower-leg,
+foot, toe, and angular-velocity outliers.
+
+### Cache
+
+Run id:
+
+```text
+filtered_cache_stage1_20260612_174908
+```
+
+Cache path:
+
+```text
+stage1_artifacts/gpt_cache_filtered_cache_stage1_20260612_174908
+```
+
+Filtering thresholds:
+
+```text
+max_observation_p99_abs_z = 6.0
+max_observation_frac_gt_5 = 0.02
+max_observation_frac_gt_10 = 0.003
+```
+
+Cache summary:
+
+| Split | Windows | Unique seqs kept | Seqs filtered | Failures | Latent shape | Text shape |
+|---|---:|---:|---:|---:|---|---|
+| train | 5767 | 877 | 123 / 1000 | 0 | `(5767, 50, 768)` | `(5767, 256, 1024)` |
+| val | 1183 | 176 | 24 / 200 | 0 | `(1183, 50, 768)` | `(1183, 256, 1024)` |
+
+Interpretation:
+
+- The filter removed about 12% of synthesized sequences in both train and val.
+- No sequence failed the conversion pipeline after filtering.
+- This is a conservative test of whether observation outliers are a major
+  source of bad GPT supervision.
+
+### Training
+
+Run id:
+
+```text
+filtered_stage1_20260612_181802
+```
+
+Checkpoint dir:
+
+```text
+stage1_artifacts/checkpoints/filtered_stage1_20260612_181802
+```
+
+Curve artifacts:
+
+```text
+stage1_artifacts/figures/filtered_stage1_20260612_181802/loss_accuracy_curve.png
+stage1_artifacts/figures/filtered_stage1_20260612_181802/loss_accuracy_curve.pdf
+stage1_artifacts/figures/filtered_stage1_20260612_181802/curve_summary.json
+```
+
+Training setup:
+
+```text
+epochs = 20
+batch_size = 12
+learning_rate = 5e-6
+train_scope = temporal_base_head
+depth_weights = 1.0,0.7,0.4,0.2
+baseline_kl_weight = 0.1
+kl_temperature = 2.0
+end_token_weight = 0.01
+progress_conditioning = auto
+progress_scale = 0.5
+teacher_progress_conditioning = none
+context_size = 51
+```
+
+Curve summary:
+
+| Metric | Value |
+|---|---:|
+| best val epoch | 17 |
+| best val loss | 3.4974 |
+| last train loss | 2.9000 |
+| last val loss | 3.5221 |
+| last train token accuracy | 0.4253 |
+| last val token accuracy | 0.3291 |
+
+Interpretation:
+
+- Epochs 0-11 show healthy learning: train and val loss both decrease.
+- Epochs 12-17 enter a validation plateau; epoch 17 is the best checkpoint.
+- Epochs 18-19 show mild overfitting: train loss keeps dropping, while val loss
+  rises from 3.4974 to 3.5221.
+- The rollout comparison must therefore use `best_val.pth`, not `last.pth`.
+
+### Top-p comparison
+
+Run id:
+
+```text
+filtered_stage1_20260612_181802_top_p_len120_scale05
+```
+
+Artifacts:
+
+```text
+BVH:
+stage1_artifacts/generated_bvh_compare/filtered_stage1_20260612_181802_top_p_len120_scale05
+
+MP4:
+stage1_artifacts/generated_video_compare/filtered_stage1_20260612_181802_top_p_len120_scale05
+
+Summary:
+stage1_artifacts/generated_bvh_compare/filtered_stage1_20260612_181802_top_p_len120_scale05/comparison_summary.md
+stage1_artifacts/generated_bvh_compare/filtered_stage1_20260612_181802_top_p_len120_scale05/comparison_summary.json
+```
+
+Generation settings:
+
+```text
+top_p = 0.95
+top_k = 0
+temperature = 1.0
+max_length = 120
+generation_mode = auto
+context_size = 30
+chunk_size = 20
+progress_scale = 0.5
+baseline_progress_conditioning = none
+finetuned_progress_conditioning = auto
+seed = 123
+```
+
+Prompts:
+
+- `walk_turn_wave`: `a person walks forward then turns around then waves both arms`
+- `circle_crouch_stand`: `a person walks in a circle then crouches down then stands up`
+- `walk_jump_dance`: `a person walks forward then jumps then dances`
+- `sidestep_kick_turn`: `a person sidesteps to the left then kicks with the right foot then turns around`
+
+Model averages:
+
+| Model | Frames | Duration | Early stop | Root path | Root disp. | Pose velocity | Pose variance | Lag-20 repeat |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline top-p | 1500.0 | 12.50 s | 0.00 | 4.024 | 1.416 | 17.780 | 152.256 | 0.000 |
+| finetuned top-p | 1722.0 | 14.35 s | 0.25 | 4.844 | 1.558 | 25.065 | 307.950 | 0.000 |
+
+Per-prompt outcome:
+
+| Prompt | Baseline frames | Finetuned frames | Main observation |
+|---|---:|---:|---|
+| `walk_turn_wave` | 1272 | 1848 | Longer and lower pose variance than baseline. |
+| `circle_crouch_stand` | 1464 | 1992 | Longer but much higher velocity/variance. |
+| `walk_jump_dance` | 1488 | 2304 | Longer but much higher velocity/variance. |
+| `sidestep_kick_turn` | 1776 | 744 | Finetuned early-stops below the 1200-frame threshold. |
+
+Interpretation:
+
+- Filtering observation outliers did not solve the Stage1 long-text generation
+  problem.
+- The fine-tuned model still tends to generate longer sequences than the
+  baseline, but the engineering diagnostics do not show a quality win:
+  average pose velocity and pose variance are substantially higher, and one
+  prompt early-stops.
+- The lag-20 repetition proxy is not the main signal in this run because both
+  models have near-zero repeat fraction at the strict 0.995 threshold.  The
+  stronger warning signs are instability-like pose statistics and early stop.
+- This result argues against "just train longer" as the next fix.  The training
+  curve already shows mild overfitting after epoch 17.
+
+### Next diagnosis
+
+The next priority is to inspect representation and supervision quality rather
+than increase epochs:
+
+1. Compare generated rollouts and cache targets at the MoConVQ observation /
+   latent level to see whether the hand-written HumanML3D position-to-state
+   retarget produces valid simulator-like body states.
+2. Audit segment-prefix samples around clip transitions: verify that each
+   target window uses the intended segment caption and that prefix/target masks
+   match the rollout regime.
+3. Test a stricter data recipe: shorter, single-transition sequences with only
+   high-confidence HumanML3D clips and no aggressive semantic composition.
+4. If quality still fails, prioritize the original MoConVQ BVH/character path
+   (`MotionDataSet.add_bvh_with_character()`) or a backup data synthesis method
+   using LLM-assisted action planning and retrieval, instead of relying on
+   hand-written joint-position retarget alone.
+
+### Follow-up: progress-feature inference alignment
+
+After the filtered-cache rollout above, the generation script was audited for a
+training/inference conditioning mismatch.  Training used segment-prefix cache
+samples with `prefix_size=25` and `context_size=51`, but the comparison command
+used rollout `context_size=30`.  Since segment progress conditioning includes a
+prefix-length ratio, this made the inference feature for a full prefix closer to
+`25/30` instead of the training value `25/51`.
+
+Code fix:
+
+- added `--progress-context-size` and `--progress-prefix-cap` to generation and
+  comparison scripts;
+- forwarded these parameters into the deterministic progress feature;
+- added tests covering progress argument forwarding and the expected
+  `25/51` prefix ratio.
+
+Verification:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_real_generate \
+  tests.test_stage1_text_gpt_comparison \
+  tests.test_stage1_real_train \
+  tests.test_stage1_bvh_comparison_summary \
+  tests.test_stage1_plot_train_curves \
+  -v
+```
+
+Result:
+
+- 36 tests passed.
+
+Aligned inference run:
+
+```text
+filtered_stage1_20260612_181802_top_p_len120_scale05_progress_aligned
+```
+
+Additional generation settings:
+
+```text
+progress_context_size = 51
+progress_prefix_cap = 25
+```
+
+Model averages:
+
+| Model | Frames | Duration | Early stop | Root path | Root disp. | Pose velocity | Pose variance | Lag-20 repeat |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline top-p | 1500.0 | 12.50 s | 0.00 | 4.024 | 1.416 | 17.780 | 152.256 | 0.000 |
+| finetuned top-p | 1716.0 | 14.30 s | 0.25 | 4.880 | 1.692 | 28.782 | 379.135 | 0.000 |
+
+Interpretation:
+
+- Aligning the progress prefix feature did not solve the rollout problem.
+- The `sidestep_kick_turn` finetuned output still early-stops at 744 frames.
+- Average pose velocity and pose variance became worse than the previous
+  filtered run, so this is not the missing fix.
+- The next likely source is not the scalar progress feature itself, but the
+  supervision distribution: segment captions, target windows, HumanML3D
+  semantic composition, and/or the hand-written HumanML3D-to-MoConVQ retarget.
+
+### Follow-up: training-distribution rollout length
+
+The cache audit showed two more possible mismatches:
+
+- the most common training sample has a 25-token motion prefix and a 25-token
+  supervised target;
+- about 30% of per-segment HumanML3D captions already contain `then`, so
+  splitting every user prompt by `then` can make inference segments finer than
+  many training segments.
+
+To isolate the length/context issue, an additional rollout was run near the
+training distribution:
+
+```text
+filtered_stage1_20260612_181802_top_p_seg25_ctx25
+```
+
+Settings:
+
+```text
+max_length = 75
+segment_length = 25
+context_size = 25
+chunk_size = 25
+progress_context_size = 51
+progress_prefix_cap = 25
+top_p = 0.95
+```
+
+Model averages:
+
+| Model | Frames | Duration | Early stop | Root path | Root disp. | Pose velocity | Pose variance | Lag-20 repeat |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline top-p | 972.0 | 8.10 s | 0.00 | 2.522 | 1.087 | 15.840 | 155.313 | 0.000 |
+| finetuned top-p | 1338.0 | 11.15 s | 0.00 | 3.425 | 1.387 | 29.389 | 306.626 | 0.001 |
+
+Interpretation:
+
+- Matching the rollout segment length and context to the dominant training
+  pattern removes the early-stop case in this prompt set.
+- It still does not make the fine-tuned model better than baseline: finetuned
+  pose velocity and pose variance remain much higher.
+- This suggests that long-context rollout mechanics are not the only problem.
+  The fine-tuning supervision itself is likely pushing GPT toward a motion
+  token distribution that decodes to less stable motions.
+
+### Cache audit notes
+
+The filtered cache has structurally valid segment-prefix samples:
+
+- `target_masks` are contiguous and align with `target_ranges`;
+- target-length and range checks pass;
+- `segment_idxs`, `num_segments`, `segment_progress`, `prefix_ranges`, and
+  `segment_ranges` are present.
+
+However, caption granularity is suspicious:
+
+| Pattern in per-window caption | Count | Share |
+|---|---:|---:|
+| contains `then` | 1723 / 5767 | 29.88% |
+| contains `and then` | 686 / 5767 | 11.90% |
+| contains `while` | 344 / 5767 | 5.96% |
+| multi-clause heuristic | 1908 / 5767 | 33.08% |
+
+Unique segment length distribution:
+
+| Quantile | Tokens |
+|---|---:|
+| 25% | 22 |
+| 50% | 37 |
+| 75% | 49 |
+| 90% | 50 |
+
+Interpretation:
+
+- The current cache treats each original HumanML3D clip caption as one segment,
+  even if that caption already describes multiple sub-actions.
+- Inference currently splits user text on `then`, which can produce shorter
+  and more atomic segments than the model saw during fine-tuning.
+- This supports the next data fix: normalize captions into a consistent
+  segment granularity, either by avoiding `then`-splitting for captions whose
+  motion is a single HumanML3D clip, or by rebuilding synthesis/cache with
+  explicitly atomic sub-action segments and matching latent boundaries.
+
+### Follow-up: RVQ token distribution shift
+
+A token-distribution diagnostic was added:
+
+```text
+Script/stage1/diagnose_token_distribution.py
+```
+
+It compares RVQ code usage in Stage1 caches against a native MoConVQ motion
+dataset observation sequence.  The native comparison uses:
+
+```text
+simple_motion_data.h5
+observation key: walk1_subject5/observation
+```
+
+Output:
+
+```text
+stage1_artifacts/diagnostics/token_distribution_hml_vs_native.json
+```
+
+Result:
+
+| Depth | HML entropy | Native entropy | HML unique | Native unique | JS divergence |
+|---|---:|---:|---:|---:|---:|
+| 0 | 5.385 | 5.982 | 311 | 139 | 0.928 |
+| 1 | 7.530 | 8.072 | 484 | 366 | 0.483 |
+| 2 | 8.114 | 8.378 | 506 | 412 | 0.330 |
+| 3 | 7.074 | 8.374 | 476 | 418 | 0.587 |
+
+Top-token concentration is especially different at RVQ depth 0:
+
+```text
+HumanML3D cache depth 0:
+  token 492: 24.43%
+  token 338: 12.04%
+
+Native MoConVQ simple motion depth 0:
+  token 414: 6.81%
+  token 272: 6.66%
+```
+
+Interpretation:
+
+- The HumanML3D-derived cache is not merely a noisy version of native MoConVQ
+  data; its RVQ token distribution is substantially shifted.
+- The strongest shift is in the first RVQ depth, which is also the most
+  heavily weighted depth in the current loss.
+- This supports the hypothesis that the hand-written HumanML3D
+  joint-position-to-body-state retarget is producing a biased latent/token
+  distribution.  Fine-tuning GPT on this distribution can improve
+  teacher-forcing token loss while degrading rollout quality.
+- The next engineering fix should prioritize data representation, not another
+  20-epoch run on the same cache.
+
+## 2026-06-12: MoConVQ native BVH-to-character retarget diagnostic
+
+### Purpose
+
+The filtered-cache experiment showed that HumanML3D-derived RVQ tokens are
+substantially shifted from native MoConVQ tokens.  To separate a model-training
+problem from a representation problem, this check probes the repository's
+original BVH loading path:
+
+```text
+BVH file -> MotionDataSet.add_bvh_with_character()
+         -> simulator character state
+         -> state2ob()
+         -> encode_seq_all()
+         -> RVQ tokens
+```
+
+This is the path used by the original MoConVQ utilities and is therefore a
+useful reference for whether our hand-written HumanML3D joint-position retarget
+is producing simulator-like observations.
+
+### Code changes
+
+- Added `Script/stage1/diagnose_bvh_character_retarget.py`.
+- Added `tests/test_stage1_bvh_character_retarget.py`.
+- The diagnostic reports:
+  - extracted `state` and `observation` shapes;
+  - normalized observation z-scores against `moconvq_base.data`;
+  - RVQ token distribution;
+  - optional JS-divergence against a native H5 observation sequence.
+
+### Verification
+
+Commands run:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/diagnose_bvh_character_retarget.py \
+  tests/test_stage1_bvh_character_retarget.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_bvh_character_retarget -v
+```
+
+Result:
+
+- `py_compile`: passed.
+- `tests.test_stage1_bvh_character_retarget`: 1 test passed.
+
+### Real diagnostic
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/diagnose_bvh_character_retarget.py \
+  base.bvh track.bvh \
+  --base-data moconvq_base.data \
+  --native-h5 simple_motion_data.h5 \
+  --native-observation-key walk1_subject5/observation \
+  --gpu 0 \
+  --output-json stage1_artifacts/diagnostics/bvh_character_retarget_base_track_vs_native.json
+```
+
+The first sandboxed attempt failed because MoConVQ's backend initializes MPI and
+needs to create a socket.  The same command succeeded outside the sandbox.
+
+Observation statistics for `base.bvh + track.bvh` through the original
+BVH-to-character path:
+
+| Metric | Value |
+|---|---:|
+| state shape | `(503, 20, 13)` |
+| observation shape | `(503, 323)` |
+| latent token shape | `(125, 4)` |
+| mean abs z | 0.5626 |
+| p95 abs z | 1.8741 |
+| p99 abs z | 2.8260 |
+| frac abs z > 5 | 0.155% |
+| frac abs z > 10 | 0.020% |
+
+For comparison, the HumanML3D hand-written retarget path after rest-pose
+calibration still had p99 abs z around 4.9--5.1 on sampled train/val subsets,
+and the uncalibrated path had p99 abs z around 19.4.
+
+RVQ JS divergence against `simple_motion_data.h5/walk1_subject5/observation`:
+
+| Depth | JS divergence |
+|---:|---:|
+| 0 | 0.928 |
+| 1 | 0.718 |
+| 2 | 0.708 |
+| 3 | 0.665 |
+
+### Interpretation
+
+- The original BVH-to-character path produces substantially healthier
+  normalized observations than the hand-written HumanML3D position-to-state
+  conversion.
+- This supports the current diagnosis that HumanML3D retarget quality, rather
+  than epoch count, is a major bottleneck.
+- The RVQ JS-divergence numbers above should be interpreted cautiously:
+  `base.bvh + track.bvh` produces only 125 latent tokens and is not the same
+  motion distribution as `walk1_subject5` in `simple_motion_data.h5`.  The token
+  comparison is therefore a smoke reference, not a final distribution-matching
+  proof.
+- The next data fix should either route HumanML3D through a BVH/character
+  retarget path, or make the current joint-position route more conservative by
+  filtering retarget outliers and normalizing segment caption granularity.
+
+## 2026-06-12: HumanML3D caption granularity diagnosis and atomic-caption synthesis option
+
+### Purpose
+
+The filtered-cache audit showed that many training windows still use captions
+that already contain multiple actions, while inference splits user prompts by
+`then`.  This creates a granularity mismatch:
+
+```text
+training: one HumanML3D clip caption may describe multiple sub-actions
+inference: one prompt is split into smaller then-separated segments
+```
+
+This check quantifies how severe that problem is and adds a data-synthesis
+option to build cleaner segment-level supervision.
+
+### Code changes
+
+- Added caption-complexity helpers to `synthesize_long_humanml3d.py`:
+  - detects `then`, `thens`, `while`, `before`, `after`, `followed by`,
+    `subsequently`, `next`, and multiple-sentence captions;
+  - optional word-count cap through `--max-caption-words`.
+- Added synthesis arguments:
+  - `--caption-filter-mode none`
+  - `--caption-filter-mode prefer_atomic`
+  - `--caption-filter-mode atomic`
+  - `--max-caption-words`
+- `prefer_atomic` keeps all samples but chooses the simplest available caption.
+- `atomic` filters out samples for which none of the captions pass the
+  atomic-caption heuristic.
+- Manifest rows now record:
+  - `clip_caption_complexity`
+  - `clip_caption_is_atomic`
+- Added `Script/stage1/diagnose_humanml3d_caption_granularity.py`.
+- Added `tests/test_stage1_caption_granularity.py` and synthesis regression
+  tests for caption filtering.
+
+### Verification
+
+Commands run:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/synthesize_long_humanml3d.py \
+  Script/stage1/diagnose_humanml3d_caption_granularity.py \
+  tests/test_stage1_real_synthesis.py \
+  tests/test_stage1_caption_granularity.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_caption_granularity \
+  tests.test_stage1_real_synthesis \
+  tests.test_stage1_bvh_character_retarget \
+  -v
+```
+
+Result:
+
+- `py_compile`: passed.
+- Caption/synthesis/BVH-retarget diagnostic tests: 11 tests passed in the
+  combined run; synthesis-only rerun after the `then/thens` rule update also
+  passed.
+
+### Real HumanML3D caption statistics
+
+Commands:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/diagnose_humanml3d_caption_granularity.py \
+  --humanml-root ../HumanML3D/HumanML3D \
+  --splits train,val,test \
+  --output-json stage1_artifacts/diagnostics/humanml3d_caption_granularity.json
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/diagnose_humanml3d_caption_granularity.py \
+  --humanml-root ../HumanML3D/HumanML3D \
+  --splits train,val,test \
+  --max-caption-words 18 \
+  --output-json stage1_artifacts/diagnostics/humanml3d_caption_granularity_max18.json
+```
+
+Without a word-count cap:
+
+| Split | Samples | First caption non-atomic | `prefer_atomic` non-atomic | `atomic` keep rate |
+|---|---:|---:|---:|---:|
+| train | 23384 | 35.20% | 8.09% | 91.91% |
+| val | 1460 | 34.38% | 7.53% | 92.47% |
+| test | 4384 | 35.77% | 8.39% | 91.61% |
+
+With `--max-caption-words 18`:
+
+| Split | Samples | First caption non-atomic | `prefer_atomic` non-atomic | `atomic` keep rate |
+|---|---:|---:|---:|---:|
+| train | 23384 | 38.66% | 9.78% | 90.22% |
+| val | 1460 | 37.67% | 9.86% | 90.14% |
+| test | 4384 | 39.19% | 10.24% | 89.76% |
+
+### Interpretation
+
+- The previous default behavior, selecting the first caption, gives a
+  multi-action caption for roughly one third of HumanML3D samples.
+- `prefer_atomic` is a low-risk improvement: it keeps all samples while reducing
+  non-atomic selected captions to about 8--10%.
+- `atomic` with `--max-caption-words 18` is also feasible: it still keeps about
+  90% of train/val clips.
+- The next data experiment should build a smaller controlled dataset with:
+
+```text
+--caption-filter-mode atomic
+--max-caption-words 18
+--min-clips 2
+--max-clips 3
+```
+
+Then it should run cache construction and token/observation diagnostics before
+launching another full 20-epoch training run.  If the RVQ depth-0 distribution
+remains strongly shifted after this cleanup, the limiting factor is more likely
+the HumanML3D-to-MoConVQ retarget representation than caption granularity.
+
+## 2026-06-12: Atomic-caption small data/cache diagnostic
+
+### Purpose
+
+This experiment tests whether fixing caption granularity alone improves the
+Stage1 supervision distribution.  It intentionally uses a small dataset first,
+so that we do not spend another full training run on a cache whose token
+distribution is already known to be bad.
+
+### Synthesis
+
+Run id:
+
+```text
+atomic_caption_stage1_20260612_203030
+```
+
+Synthesis settings:
+
+```text
+caption_filter_mode = atomic
+max_caption_words = 18
+min_clips = 2
+max_clips = 3
+candidate_pool = 256
+transition_max_score = 0.35
+drop_overlap_frames = 1
+allow_forced_transitions = false
+```
+
+Summary:
+
+| Split | Sequences | Avg clips | Avg frames | Avg duration | Failed attempts | Forced transitions | Non-atomic clip captions |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| train | 100 | 2.43 | 323.77 | 16.19 s | 1 | 0 | 0 |
+| val | 30 | 2.57 | 368.87 | 18.44 s | 0 | 0 | 0 |
+
+Boundary diagnostics:
+
+| Split | Transitions | Bad transition rate | Root gap mean / p95 | Yaw gap mean / p95 | Foot velocity gap mean / p95 |
+|---|---:|---:|---:|---:|---:|
+| train | 143 | 1.40% | 0.0034 / 0.0143 | 0.0118 / 0.0443 | 0.0124 / 0.0519 |
+| val | 47 | 4.26% | 0.0020 / 0.0123 | 0.0125 / 0.0651 | 0.0142 / 0.0511 |
+
+Interpretation:
+
+- Atomic caption filtering works as intended: all selected per-clip captions
+  pass the heuristic.
+- The boundary quality remains comparable to previous synthesis runs.  The val
+  bad-transition rate is higher because the split is tiny and one short
+  sequence contributes two warnings, but p95 root/yaw/foot metrics remain low.
+
+### Observation and cache diagnostics
+
+Observation diagnostic:
+
+```text
+stage1_artifacts/diagnostics/atomic_caption_stage1_20260612_203030/train_observation_distribution_100.json
+```
+
+Train 100-sequence observation z-scores after rest-pose calibration:
+
+| Metric | Value |
+|---|---:|
+| mean abs z | 0.7451 |
+| p95 abs z | 2.7831 |
+| p99 abs z | 5.2472 |
+| frac abs z > 5 | 1.27% |
+| frac abs z > 10 | 0.119% |
+
+Worst dimensions remain lower-leg/foot `local_rot_6d` and angular-velocity
+channels.  This is the same pattern seen in the previous filtered-cache run.
+
+Cache settings:
+
+```text
+sample_mode = segment_prefix
+caption_mode = window
+window_policy = clip
+prefix_size = 25
+forced_transition_margin = 2
+rotation_calibration = rest
+max_observation_p99_abs_z = 6.0
+max_observation_frac_gt_5 = 0.02
+max_observation_frac_gt_10 = 0.003
+```
+
+Cache summary:
+
+| Split | Windows | Unique seqs kept | Filtered seqs | Failures | Target tokens | Non-atomic window captions |
+|---|---:|---:|---:|---:|---:|---:|
+| train | 403 | 78 | 22 / 100 | 0 | 9578 | 0 / 403 |
+| val | 171 | 28 | 2 / 30 | 0 | 4164 | 0 / 171 |
+
+### Token distribution
+
+Token diagnostic:
+
+```text
+stage1_artifacts/diagnostics/atomic_caption_stage1_20260612_203030/token_distribution_atomic_val_vs_native.json
+```
+
+Comparison against `simple_motion_data.h5/walk1_subject5/observation`:
+
+| Depth | Atomic-cache entropy | Native entropy | Atomic unique | Native unique | JS divergence |
+|---|---:|---:|---:|---:|---:|
+| 0 | 5.283 | 5.982 | 169 | 139 | 0.942 |
+| 1 | 7.258 | 8.072 | 357 | 366 | 0.540 |
+| 2 | 7.845 | 8.378 | 420 | 412 | 0.381 |
+| 3 | 6.848 | 8.374 | 353 | 418 | 0.626 |
+
+Depth-0 top-token concentration remains almost identical to the previous
+HumanML3D-derived cache:
+
+```text
+Atomic HumanML3D cache depth 0:
+  token 492: 22.69%
+  token 338: 11.79%
+
+Native MoConVQ depth 0:
+  token 414: 6.81%
+  token 272: 6.66%
+```
+
+### Interpretation
+
+- Caption granularity is now clean in this small cache, so it is no longer the
+  immediate explanation for token distribution shift.
+- Atomic caption filtering does not fix the RVQ depth-0 distribution problem.
+  The same token ids dominate, and JS divergence remains extremely high.
+- Therefore, launching another full 20-epoch GPT training run on this cache is
+  not the highest-value next step.  The next correction should target the
+  HumanML3D-to-MoConVQ representation route:
+  - replace or validate the hand-written joint-position-to-body-state retarget;
+  - prefer a BVH/character loading path if HumanML3D/AMASS source motion can be
+    converted to BVH;
+  - or build a more conservative proof-of-concept from native MoConVQ
+    observations before returning to HumanML3D.
+
+### Source-motion availability check
+
+`HumanML3D/index.csv` still records the original source paths, for example:
+
+```text
+./pose_data/KIT/3/kick_high_left02_poses.npy
+./pose_data/CMU/80/80_63_poses.npy
+```
+
+However, those files are not present in the current workspace.  The available
+HumanML3D files are the processed `new_joints`, `new_joint_vecs`, `texts`, and
+SMPLH/DMPL body models.  Therefore, the original MoConVQ
+`MotionDataSet.add_bvh_with_character()` route cannot currently be applied to
+HumanML3D source motions without restoring/downloading the source pose data or
+creating BVH files from `new_joints`.
+
+Practical next options:
+
+1. Restore HumanML3D/AMASS `pose_data`, convert source motions to BVH, and pass
+   them through MoConVQ's native BVH-to-character path.
+2. Keep `new_joints`, but replace the current heuristic rigid-body quaternion
+   construction with a more principled IK/rest-pose fitting method before
+   calling `state2ob()`.
+3. For a proof-of-concept long-text pipeline, build synthetic long sequences
+   from native MoConVQ observations/BVHs first, then return to HumanML3D after
+   retarget quality is fixed.
+
+## 2026-06-12: 20-epoch fit status and HumanML3D 6D rotation diagnostic
+
+### 20-epoch fit status
+
+Run:
+
+```text
+stage1_artifacts/checkpoints/filtered_stage1_20260612_181802/train_log.jsonl
+```
+
+The 20-epoch run does not look under-trained on the current cache.  Validation
+loss reaches its best value around epoch 17, then slightly degrades while train
+loss continues to decrease.
+
+| Epoch | Train loss | Val loss | Train token acc. | Val token acc. |
+|---:|---:|---:|---:|---:|
+| 0 | 5.3542 | 4.5479 | 0.1238 | 0.1828 |
+| 17 | 2.9831 | 3.4974 | 0.4108 | 0.3282 |
+| 19 | 2.9000 | 3.5221 | 0.4253 | 0.3291 |
+
+Interpretation:
+
+- The model is not mainly limited by too few epochs.
+- Epochs 18--19 show mild overfitting: train loss improves, but validation loss
+  rises from the best epoch.
+- `best_val.pth` is the correct checkpoint for comparison; `last.pth` should
+  not be used as the representative model.
+- Poor rollout quality is more likely caused by motion representation shift,
+  data/segment alignment, and autoregressive error accumulation than by
+  insufficient optimization.
+
+### HumanML3D `new_joint_vecs` 6D rotation path
+
+Motivation: current HumanML3D-to-MoConVQ conversion estimates MoConVQ body
+rotations from `new_joints` positions.  Since HumanML3D `new_joint_vecs` stores
+root yaw velocity and 21 local 6D joint rotations, we tested whether using this
+rotation block can reduce MoConVQ observation outliers.
+
+Implementation:
+
+- Added `--rotation-source heuristic|humanml_vec6d`.
+- `heuristic` preserves the previous default path.
+- `humanml_vec6d` reconstructs HumanML3D global 22-joint rotations from the
+  263-d representation and maps them to the 20 MoConVQ bodies.
+- Unit tests verify that the 6D block can reconstruct processed
+  `new_joints` with mean error below `1e-4`, so the HumanML3D layout parsing is
+  correct.
+
+Validation command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/diagnose_observation_distribution.py \
+  --long-h5 stage1_artifacts/long_humanml3d_atomic_atomic_caption_stage1_20260612_203030/train/long_sequences.h5 \
+  --base-data moconvq_base.data \
+  --gpu 0 \
+  --max-sequences 100 \
+  --rotation-source humanml_vec6d \
+  --rotation-calibration rest \
+  --output stage1_artifacts/diagnostics/atomic_caption_stage1_20260612_203030/train_observation_distribution_humanml_vec6d_100.json
+```
+
+Observation z-score comparison on the same 100 atomic-caption train sequences:
+
+| Rotation source | Mean abs-z | P95 abs-z | P99 abs-z | Frac > 5 | Frac > 10 | Worst p99 dim |
+|---|---:|---:|---:|---:|---:|---|
+| `heuristic` | 0.7451 | 2.7831 | 5.2472 | 1.267% | 0.119% | `lLowerLeg local_rot_6d[0]`, 19.01 |
+| `humanml_vec6d` | 1.0776 | 4.0729 | 7.0407 | 2.939% | 0.570% | `lowerBack local_rot_6d[0]`, 19.80 |
+
+Interpretation:
+
+- The 263-d HumanML3D rotation block is parsed correctly, but directly mapping
+  those rotations to MoConVQ rigid bodies makes the MoConVQ observation
+  distribution worse.
+- This means the immediate problem is not simply that the previous path ignored
+  `new_joint_vecs` rotations.  The larger issue is cross-skeleton/rigid-body
+  retargeting: HumanML3D joint rotations are not equivalent to MoConVQ's
+  20-body simulator orientations.
+- Do not rebuild the main GPT cache with `rotation_source=humanml_vec6d` unless
+  a later calibration/IK step improves the observation and RVQ token
+  distribution first.
+
+### Native MoConVQ observation cache smoke
+
+Purpose: separate GPT training-code compatibility from HumanML3D retarget
+quality.  This smoke uses the original MoConVQ processed observation H5 directly
+and therefore bypasses HumanML3D-to-MoConVQ state conversion.
+
+Source:
+
+```text
+simple_motion_data.h5/walk1_subject5/observation
+```
+
+Cache command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_native_moconvq_gpt_cache.py \
+  --native-h5 simple_motion_data.h5 \
+  --motion 'walk1_subject5=a person walks forward' \
+  --base-data moconvq_base.data \
+  --text-model ../hf_models/t5-large \
+  --gpu 0 \
+  --window-size 50 \
+  --window-stride 25 \
+  --output stage1_artifacts/gpt_cache_native_smoke/train_cache.pt \
+  --summary stage1_artifacts/gpt_cache_native_smoke/train_summary.json
+```
+
+Cache summary:
+
+| Field | Value |
+|---|---:|
+| windows | 52 |
+| latents shape | `(52, 50, 768)` |
+| indices shape | `(52, 50, 4)` |
+| text features shape | `(52, 256, 1024)` |
+| valid tokens | 10400 |
+| index range | 0..511 |
+| unique source sequences | 1 |
+
+Training smoke:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/train_real_text_gpt.py \
+  --train-cache stage1_artifacts/gpt_cache_native_smoke/train_cache.pt \
+  --val-cache stage1_artifacts/gpt_cache_native_smoke/train_cache.pt \
+  --init-checkpoint text_generation_GPT.pth \
+  --base-data moconvq_base.data \
+  --output-dir stage1_artifacts/checkpoints/native_smoke_20260612 \
+  --epochs 1 \
+  --batch-size 4 \
+  --lr 1e-5 \
+  --weight-decay 0.01 \
+  --train-scope head \
+  --gpu 0 \
+  --seed 0 \
+  --save-every 1 \
+  --num-workers 0 \
+  --smoke
+```
+
+Result:
+
+| Metric | Train | Val |
+|---|---:|---:|
+| loss | 8.6373 | 8.0467 |
+| token accuracy | 0.0088 | 0.0075 |
+| valid tokens | 800 | 800 |
+| batches | 1 | 1 |
+
+Interpretation:
+
+- The native MoConVQ observation cache schema is compatible with the existing
+  GPT training code and corrected autoregressive loss path.
+- This is only a smoke test, not a quality result: it uses one walking motion
+  and one batch.
+- The next meaningful experiment is either:
+  1. build a small native-observation proof-of-concept with multiple MoConVQ
+     motions/captions to verify long-text segmentation and rollout without
+     HumanML3D retarget noise; or
+  2. restore HumanML3D/AMASS source `pose_data`/BVH and run MoConVQ's native
+     `MotionDataSet.add_bvh_with_character()` path instead of hand-written
+     position-to-state retargeting.
+
+### BVH-to-character cache path added
+
+To make option 2 concrete, added a cache builder that uses the original MoConVQ
+BVH loading route:
+
+```text
+Script/stage1/build_bvh_character_gpt_cache.py
+```
+
+The route is:
+
+```text
+BVH file
+  -> MotionDataSet.add_bvh_with_character()
+  -> MoConVQ simulator character state/observation
+  -> agent.encode_seq_all()
+  -> latent_vq + RVQ indices + T5 caption feature cache
+```
+
+This is intentionally different from the current HumanML3D `new_joints` route:
+it lets VclSimuBackend/MoConVQ perform the character retargeting instead of
+hard-coding a HumanML3D joint-to-20-body mapping.  Once HumanML3D/AMASS source
+motions can be restored or exported as BVH, this script is the preferred path
+for rebuilding the Stage1 GPT cache.
+
+Example command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --bvh 'path/to/motion.bvh=a person walks forward' \
+  --base-data moconvq_base.data \
+  --text-model ../hf_models/t5-large \
+  --gpu 0 \
+  --window-size 50 \
+  --window-stride 25 \
+  --output stage1_artifacts/gpt_cache_bvh_character/train_cache.pt \
+  --observation-h5 stage1_artifacts/gpt_cache_bvh_character/source_observation.h5 \
+  --summary stage1_artifacts/gpt_cache_bvh_character/train_summary.json
+```
+
+Tested:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_bvh_character_cache \
+  tests.test_stage1_native_cache \
+  tests.test_stage1_bvh_character_retarget \
+  -v
+```
+
+Result: 6 tests passed.
+
+## 2026-06-13: LLM in-context token planning backup path implemented
+
+### Purpose
+
+The current HumanML3D-derived GPT fine-tuning route has not yet produced a
+clear rollout-quality win over the baseline.  Diagnostics point to a
+representation problem: the hand-written HumanML3D-to-MoConVQ retarget path
+produces shifted RVQ token distributions, especially at depth 0, and the
+available local BVH files are too few for a full native BVH-to-character
+retraining run.  To keep Stage1 moving toward a complete long-horizon
+language-to-motion pipeline, this change starts engineering the MoConVQ paper's
+LLM in-context integration backup route.
+
+### Code changes
+
+Added:
+
+```text
+Script/stage1/llm_token_planning.py
+tests/test_stage1_llm_token_planning.py
+tests/test_stage1_repository_hygiene.py
+```
+
+The new script provides one unified entry point with subcommands:
+
+```text
+export-bank      export caption -> 4-depth RVQ token examples from a GPT cache
+retrieve         retrieve examples for a query segment
+build-prompt     build a JSON-only in-context prompt for an external LLM
+validate         parse and validate an LLM token response
+retrieval-plan   deterministic retrieval-only token baseline, no LLM API needed
+decode-bvh       decode validated RVQ tokens through MoConVQ into BVH
+```
+
+Repository hygiene:
+
+- Added `.gitignore` patterns for `AGENT.md`, `AGENTS.md`, `CODEX.md`,
+  `CLAUDE.md`, `.codex/`, and `.claude/`.
+- Added a test that fails if agent/private assistant docs are tracked in the
+  `MoConVQ` repository.
+
+### Smoke run
+
+Run id:
+
+```text
+llm_backup_smoke_20260613
+```
+
+Commands:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/llm_token_planning.py export-bank \
+  --cache stage1_artifacts/gpt_cache_filtered_cache_stage1_20260612_174908/train_cache.pt \
+  --output stage1_artifacts/llm_backup/example_bank_filtered_200.jsonl \
+  --max-examples 200 \
+  --max-tokens-per-example 32 \
+  --min-tokens-per-example 8
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/llm_token_planning.py build-prompt \
+  --bank stage1_artifacts/llm_backup/example_bank_filtered_200.jsonl \
+  --text 'a person walks forward then kicks with the right foot then dances' \
+  --top-k 3 \
+  --segment-token-count 12 \
+  --max-tokens-per-example 12 \
+  --output-prompt stage1_artifacts/llm_backup/runs/llm_backup_smoke_20260613/prompt.txt \
+  --output-json stage1_artifacts/llm_backup/runs/llm_backup_smoke_20260613/retrieval.json
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/llm_token_planning.py retrieval-plan \
+  --bank stage1_artifacts/llm_backup/example_bank_filtered_200.jsonl \
+  --text 'a person walks forward then kicks with the right foot then dances' \
+  --top-k 3 \
+  --segment-token-count 12 \
+  --output-tokens stage1_artifacts/llm_backup/runs/llm_backup_smoke_20260613/retrieval_tokens.json \
+  --validation-json stage1_artifacts/llm_backup/runs/llm_backup_smoke_20260613/retrieval_validation.json
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/llm_token_planning.py decode-bvh \
+  --tokens stage1_artifacts/llm_backup/runs/llm_backup_smoke_20260613/retrieval_tokens.json \
+  --base-data moconvq_base.data \
+  --gpu 0 \
+  --output-bvh stage1_artifacts/llm_backup/runs/llm_backup_smoke_20260613/retrieval_output.bvh
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/evaluate_bvh_metrics.py \
+  'stage1_artifacts/llm_backup/runs/llm_backup_smoke_20260613/retrieval_output.bvh' \
+  --sample-stride 6 \
+  --lags 5,10,20,30 \
+  --expected-min-frames 600 \
+  --output stage1_artifacts/llm_backup/runs/llm_backup_smoke_20260613/retrieval_bvh_metrics.json
+```
+
+Result:
+
+| Item | Value |
+|---|---:|
+| exported examples | 200 |
+| retrieval-only RVQ tuples | 36 |
+| token validation | passed |
+| decoded BVH frames | 864 |
+| duration | 7.20 s |
+| early stop threshold | 600 frames |
+| early stop | false |
+| root path | 1.739 |
+| root displacement | 0.279 |
+| pose velocity mean | 11.362 |
+| pose variance mean | 89.864 |
+| lag-20 repeat > 0.995 | 0.00% |
+
+Interpretation:
+
+- The LLM backup route is now a working minimal engineering loop:
+
+```text
+GPT cache -> example bank -> retrieval/prompt -> validated RVQ tokens
+-> MoConVQ decoder/controller -> BVH -> engineering metrics
+```
+
+- This is not yet an LLM semantic-quality result.  The smoke used
+  `retrieval-plan`, which copies/repeats retrieved examples as a deterministic
+  lower bound and API-free sanity check.
+- The next backup experiment should take the generated `prompt.txt`, obtain an
+  actual LLM JSON response, validate it, decode it to BVH, render side-by-side
+  videos against baseline/finetuned GPT, and record the same engineering
+  metrics.
+
+### Verification
+
+Commands run:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/llm_token_planning.py \
+  tests/test_stage1_llm_token_planning.py \
+  tests/test_stage1_repository_hygiene.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_llm_token_planning \
+  tests.test_stage1_repository_hygiene \
+  -v
+```
+
+Result:
+
+- `py_compile`: passed.
+- LLM token planning + repository hygiene tests: 7 tests passed.
+
+### BVH-to-character cache smoke on existing BVH files
+
+Purpose: verify that the new BVH-character cache path can run end-to-end on
+actual local BVH files and produce a `train_real_text_gpt.py` compatible cache.
+
+Commands:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --bvh 'base.bvh=a person walks forward' \
+  --base-data moconvq_base.data \
+  --text-model ../hf_models/t5-large \
+  --gpu 0 \
+  --window-size 50 \
+  --window-stride 25 \
+  --output stage1_artifacts/gpt_cache_bvh_smoke/train_cache.pt \
+  --observation-h5 stage1_artifacts/gpt_cache_bvh_smoke/source_observation.h5 \
+  --summary stage1_artifacts/gpt_cache_bvh_smoke/train_summary.json
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --bvh 'track.bvh=a person walks and changes direction' \
+  --base-data moconvq_base.data \
+  --text-model ../hf_models/t5-large \
+  --gpu 0 \
+  --window-size 50 \
+  --window-stride 25 \
+  --output stage1_artifacts/gpt_cache_bvh_smoke/track_cache.pt \
+  --observation-h5 stage1_artifacts/gpt_cache_bvh_smoke/track_observation.h5 \
+  --summary stage1_artifacts/gpt_cache_bvh_smoke/track_summary.json
+```
+
+Cache summaries:
+
+| Source BVH | Windows | Latents shape | Indices shape | Valid tokens | Index range |
+|---|---:|---|---|---:|---|
+| `base.bvh` | 1 | `(1, 50, 768)` | `(1, 50, 4)` | 16 | 27..489 |
+| `track.bvh` | 4 | `(4, 50, 768)` | `(4, 50, 4)` | 800 | 3..511 |
+
+Token distribution diagnostic:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/diagnose_token_distribution.py \
+  --cache stage1_artifacts/gpt_cache_bvh_smoke/track_cache.pt \
+  --native-h5 simple_motion_data.h5 \
+  --native-observation-key walk1_subject5/observation \
+  --base-data moconvq_base.data \
+  --gpu 0 \
+  --output-json stage1_artifacts/diagnostics/bvh_character_track_vs_native_tokens.json
+```
+
+Comparison against `simple_motion_data.h5/walk1_subject5/observation`:
+
+| Depth | BVH cache entropy | Native entropy | BVH unique | Native unique | JS divergence |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 5.376 | 5.982 | 59 | 139 | 0.944 |
+| 1 | 6.270 | 8.072 | 91 | 366 | 0.787 |
+| 2 | 6.454 | 8.378 | 96 | 412 | 0.687 |
+| 3 | 6.439 | 8.374 | 98 | 418 | 0.698 |
+
+The JS divergence is still high, but this is expected for a 200-token cache
+from a single `track.bvh` sample and should not be over-interpreted.  Unlike the
+HumanML3D-derived cache, the top depth-0 token is not extremely dominant:
+
+```text
+track.bvh depth 0 top fractions:
+  0.090, 0.075, 0.055, 0.055, 0.050
+```
+
+Training smoke:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/train_real_text_gpt.py \
+  --train-cache stage1_artifacts/gpt_cache_bvh_smoke/track_cache.pt \
+  --val-cache stage1_artifacts/gpt_cache_bvh_smoke/track_cache.pt \
+  --init-checkpoint text_generation_GPT.pth \
+  --base-data moconvq_base.data \
+  --output-dir stage1_artifacts/checkpoints/bvh_smoke_20260612 \
+  --epochs 1 \
+  --batch-size 2 \
+  --lr 1e-5 \
+  --weight-decay 0.01 \
+  --train-scope head \
+  --gpu 0 \
+  --seed 0 \
+  --save-every 1 \
+  --num-workers 0 \
+  --smoke
+```
+
+Result:
+
+| Metric | Train | Val |
+|---|---:|---:|
+| loss | 7.6435 | 7.8137 |
+| token accuracy | 0.0050 | 0.0175 |
+| valid tokens | 400 | 400 |
+| batches | 1 | 1 |
+
+Interpretation:
+
+- The original MoConVQ BVH-to-character route can produce a GPT training cache
+  and the current training code can consume it.
+- The available local BVH files are too few for a meaningful fine-tuning
+  experiment.  `base.bvh` is especially short; `track.bvh` gives only four
+  windows.
+- This validates the engineering path for the retarget fix, but the next
+  required data step is still to restore/export a larger HumanML3D/AMASS BVH
+  source set and rebuild cache through this route.
+
+## 2026-06-12: Evaluation readiness audit
+
+### Paper-level metrics from MoConVQ
+
+The MoConVQ paper evaluates Text2Motion-MoConGPT on the HumanML3D test set
+using FID and R-precision.  It explicitly states that the evaluation follows
+the HumanML3D text-to-motion protocol and uses the same pretrained motion
+feature extractor as prior HumanML3D methods.  The paper also notes that
+retargeting between the simulated character and SMPL can reduce R-precision,
+which is directly relevant to the current Stage1 retarget bottleneck.
+
+Therefore, the final "better than baseline" claim should ideally include:
+
+- FID on HumanML3D/SMPL-style motion features;
+- R-precision for text-motion semantic retrieval;
+- rendered videos and engineering diagnostics as supporting evidence.
+
+### Current repository readiness
+
+Added:
+
+```text
+Script/stage1/check_evaluation_readiness.py
+tests/test_stage1_evaluation_readiness.py
+```
+
+Audit command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/check_evaluation_readiness.py \
+  --repo-root . \
+  --humanml-root ../HumanML3D \
+  --output stage1_artifacts/diagnostics/evaluation_readiness_20260612.json
+```
+
+Result:
+
+| Item | Status |
+|---|---|
+| HumanML3D evaluator source files | missing |
+| Pretrained HumanML3D evaluator / motion-feature extractor checkpoints | missing |
+| Paper-level FID/R-precision ready | no |
+| BVH engineering metrics script | available |
+| baseline-vs-finetuned comparison script | available |
+| token distribution diagnostic | available |
+| observation z-score diagnostic | available |
+
+Current recommendation:
+
+```text
+Use engineering diagnostics only as intermediate checks; do not claim
+paper-level improvement over baseline until FID/R-precision evaluator assets
+are available.
+```
+
+Verification:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_evaluation_readiness \
+  tests.test_stage1_bvh_metrics \
+  tests.test_stage1_text_gpt_comparison \
+  -v
+```
+
+Result: 6 tests passed.
+
+## 2026-06-13: Stage1 mainline diagnostics and training/generation protocol synced
+
+### Purpose
+
+The previous GitHub `stage1` branch had the LLM token-planning backup path, but
+many mainline Stage1 diagnostics and protocol fixes were still local.  This
+sync packages the mainline capabilities needed to reproduce and explain the
+current Stage1 diagnosis:
+
+```text
+HumanML3D synthesis/caption filtering
+-> calibrated HumanML3D-to-MoConVQ cache construction
+-> segment-prefix/progress-conditioned GPT training
+-> top-p and segmented generation
+-> BVH/native-observation retarget diagnostics
+-> paper-metric readiness audit
+-> engineering BVH metrics and comparison summaries
+```
+
+This is still not a claim that Stage1 is complete or that the fine-tuned model
+beats baseline.  It makes the current evidence and reproduction tooling
+available from the remote branch.
+
+### Code included
+
+Updated or added:
+
+```text
+MoConVQCore/Model/cross_trans_ori_fixsum.py
+Script/stage1/real_moconvq_cache.py
+Script/stage1/train_real_text_gpt.py
+Script/stage1/generate_long_motion.py
+Script/stage1/synthesize_long_humanml3d.py
+Script/stage1/build_bvh_character_gpt_cache.py
+Script/stage1/build_native_moconvq_gpt_cache.py
+Script/stage1/diagnose_observation_distribution.py
+Script/stage1/diagnose_token_distribution.py
+Script/stage1/diagnose_bvh_character_retarget.py
+Script/stage1/diagnose_humanml3d_caption_granularity.py
+Script/stage1/diagnose_long_humanml3d_quality.py
+Script/stage1/evaluate_bvh_metrics.py
+Script/stage1/check_evaluation_readiness.py
+Script/stage1/run_text_gpt_comparison.py
+Script/stage1/summarize_bvh_comparison.py
+Script/stage1/segment_conditioning.py
+Script/stage1/plot_train_curves.py
+Script/stage1/export_baseline_intermediate.py
+Script/stage1/intermediate_motion_format.py
+```
+
+Key protocol fixes now present in the pushed code:
+
+- GPT training reconstructs context latents from RVQ codebook indices, matching
+  rollout-time feedback instead of using encoder `latent_vq` directly.
+- `target_masks` exclude prefix/context-only tokens from CE, KL, and accuracy.
+- End-token auxiliary loss is applied once at RVQ depth 0.
+- Segment-progress conditioning enters through the existing `clip_feature`
+  pathway and can be disabled for the baseline/teacher.
+- HumanML3D retarget defaults to rest-pose rotation calibration and records
+  retarget config in cache metadata.
+- Cache construction supports observation z-score filtering.
+- HumanML3D synthesis supports atomic caption filtering and overlap-frame
+  dropping.
+- Inference supports top-p/top-k/temperature and segmented generation without
+  treating segment early-stop as whole-prompt early-stop.
+
+### BVH metrics robustness fix
+
+While smoke-testing `evaluate_bvh_metrics.py` on the repository BVHs, `base.bvh`
+reported `Frames: 100` but contained 110 motion rows.  The metric tool now
+accepts BVH files with extra rows by trimming to the header frame count, while
+still rejecting files with fewer rows than declared.  This makes the engineering
+metric script usable on the existing local BVH references.
+
+Smoke command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/evaluate_bvh_metrics.py base.bvh track.bvh \
+  --sample-stride 6 \
+  --lags 5,10 \
+  --expected-min-frames 600 \
+  --output /tmp/stage1_bvh_metrics_sync_check.json
+```
+
+Selected result:
+
+| BVH | Frames | Duration | Early stop | Root path | Pose velocity mean |
+|---|---:|---:|---|---:|---:|
+| `base.bvh` | 100 | 0.83 s | yes | 0.102 | 12.665 |
+| `track.bvh` | 2904 | 24.20 s | no | 9.774 | 26.801 |
+
+### Evaluation readiness smoke
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/check_evaluation_readiness.py \
+  --repo-root . \
+  --humanml-root ../HumanML3D \
+  --output /tmp/stage1_eval_readiness_sync_check.json
+```
+
+Result:
+
+```text
+paper_metrics_ready = false
+missing:
+  - HumanML3D text-motion evaluator source files
+  - pretrained HumanML3D evaluator / motion-feature extractor checkpoints
+engineering tools available:
+  - BVH metrics
+  - baseline-vs-finetuned comparison
+  - token distribution diagnostic
+  - observation distribution diagnostic
+```
+
+### Verification
+
+Commands run in a clean worktree based on `origin/stage1`:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  MoConVQCore/Model/cross_trans_ori_fixsum.py \
+  Script/stage1/real_moconvq_cache.py \
+  Script/stage1/train_real_text_gpt.py \
+  Script/stage1/generate_long_motion.py \
+  Script/stage1/synthesize_long_humanml3d.py \
+  Script/stage1/evaluate_bvh_metrics.py \
+  Script/stage1/check_evaluation_readiness.py \
+  Script/stage1/llm_token_planning.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_gpt \
+  tests.test_stage1_real_cache \
+  tests.test_stage1_real_train \
+  tests.test_stage1_real_generate \
+  tests.test_stage1_real_synthesis \
+  tests.test_stage1_caption_granularity \
+  tests.test_stage1_observation_diagnostics \
+  tests.test_stage1_bvh_metrics \
+  tests.test_stage1_evaluation_readiness \
+  tests.test_stage1_llm_token_planning \
+  tests.test_stage1_repository_hygiene \
+  tests.test_stage1_bvh_character_cache \
+  tests.test_stage1_bvh_character_retarget \
+  tests.test_stage1_bvh_comparison_summary \
+  tests.test_stage1_intermediate_export \
+  tests.test_stage1_native_cache \
+  tests.test_stage1_plot_train_curves \
+  tests.test_stage1_render_bvh \
+  tests.test_stage1_text_gpt_comparison \
+  -v
+```
+
+Result:
+
+```text
+py_compile passed
+92 tests passed, 1 skipped
+tracked agent/Codex private doc check: empty
+```
+
+### Next step
+
+With both mainline diagnostics and the LLM backup tool now available from the
+remote branch, the next Stage1 experiment should be a real comparison package:
+
+1. Choose the current best mainline checkpoint and baseline checkpoint.
+2. Generate the same prompt set with baseline, fine-tuned GPT, retrieval-only
+   backup, and an actual LLM-token response if available.
+3. Render side-by-side videos and run BVH engineering metrics.
+4. Record a semantic checklist per prompt.
+5. If HumanML3D evaluator assets become available, add FID/R-precision before
+   making the final paper-level claim.
+
+## 2026-06-13: Unified Stage1 model-suite comparison runner
+
+### Motivation
+
+The Stage1 goal now requires a final comparison package, not only isolated
+single-route smoke tests.  Previous runs compared baseline-vs-finetuned GPT in
+one script and tested the LLM-token backup in a separate script, which made it
+easy to use different prompt sets, decoding settings, or metric commands.
+
+This update adds a unified runner:
+
+```text
+Script/stage1/run_stage1_model_suite.py
+tests/test_stage1_model_suite.py
+```
+
+The suite creates one `stage1_artifacts/model_suite/<run_id>/` directory with:
+
+```text
+prompts.tsv
+bvh/<prompt>__baseline_top_p.bvh
+bvh/<prompt>__finetuned_top_p.bvh
+bvh/<prompt>__backup_retrieval.bvh
+bvh/<prompt>__backup_llm.bvh        # optional, only when an LLM response is supplied
+summary_metrics.json
+suite_summary.json
+llm_backup/<prompt>/prompt.txt
+llm_backup/<prompt>/retrieval_tokens.json
+llm_backup/<prompt>/retrieval_validation.json
+```
+
+Default prompts:
+
+```text
+walk_turn_wave        a person walks forward then turns around then waves both arms
+circle_crouch_stand   a person walks in a circle then crouches down then stands up
+walk_jump_dance       a person walks forward then jumps then dances
+sidestep_kick_turn    a person sidesteps to the left then kicks with the right foot then turns around
+```
+
+The runner intentionally keeps the current metric scope explicit:
+
+- `summary_metrics.json` is produced with `evaluate_bvh_metrics.py`.
+- Metrics are BVH engineering diagnostics: frames, duration, early-stop flag,
+  root path/displacement, pose velocity/variance, and lagged repeat proxies.
+- These metrics still do not replace HumanML3D FID/R-precision.
+
+### Command template for the next real suite
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python Script/stage1/run_stage1_model_suite.py \
+  --run-id suite_filtered_stage1_20260613 \
+  --finetuned-checkpoint stage1_artifacts/checkpoints/filtered_stage1_20260612_181802/best_val.pth \
+  --backup-cache stage1_artifacts/gpt_cache_filtered_cache_stage1_20260612_174908/train_cache.pt \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --max-length 120 \
+  --context-size 30 \
+  --chunk-size 20 \
+  --top-p 0.95 \
+  --progress-scale 0.5 \
+  --progress-context-size 51 \
+  --progress-prefix-cap 25 \
+  --expected-min-frames 1200 \
+  --gpu 0
+```
+
+For an actual LLM backup result, save the external LLM response JSON and pass:
+
+```bash
+--llm-response-map stage1_artifacts/model_suite/<run_id>/llm_responses.json
+```
+
+where the map is a JSON object from prompt name to response file.  Relative
+response paths are resolved relative to the map file.
+
+### Implementation notes
+
+- `--skip-backup` now fully skips backup setup, including example-bank export.
+- `--llm-response-map` can be used without a retrieval bank, so actual LLM
+  token responses can be validated and decoded independently.
+- Retrieval-only backup plans now support `--trim-repeat-runs`.  This does not
+  claim semantic improvement; it prevents copied retrieval snippets from
+  producing invalid long runs of identical RVQ tuples before BVH decoding.
+- `decode-bvh` now accepts `--motion-dataset`, and the suite records the
+  resolved path in `suite_summary.json`.  This avoids depending on
+  `./simple_motion_data.h5` relative to the caller's current directory.
+- `llm_token_planning.py` now inserts its own repo root into `sys.path` when run
+  as a script, preventing a temporary worktree from importing stale modules
+  from another checkout.
+- Default prompt generation, response-map parsing, backup command wiring,
+  repeat-run trimming, and repository hygiene are covered by tests.
+
+### Smoke: existing filtered BVH summary
+
+The suite was first run in `--skip-generation --skip-backup` mode on an existing
+baseline-vs-finetuned directory:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python Script/stage1/run_stage1_model_suite.py \
+  --run-id suite_existing_bvh_smoke_20260613 \
+  --suite-dir stage1_artifacts/model_suite/suite_existing_bvh_smoke_20260613 \
+  --bvh-dir /home/chenjie/cc/robotics/MoConVQ/stage1_artifacts/generated_bvh_compare/filtered_stage1_20260612_181802_top_p_len120_scale05 \
+  --finetuned-checkpoint stage1_artifacts/checkpoints/filtered_stage1_20260612_181802/best_val.pth \
+  --skip-generation \
+  --skip-backup \
+  --expected-min-frames 1200
+```
+
+Result:
+
+```text
+baseline_top_p:
+  avg_frames = 1500.0
+  avg_duration_sec = 12.4995
+  avg_root_path_length = 4.0237
+  avg_root_displacement = 1.4157
+  avg_pose_velocity_mean = 17.7805
+  avg_pose_variance_mean = 152.2556
+  avg_lag_20_repeat_fraction_0.995 = 0.0
+  early_stop_rate = 0.0
+
+finetuned_top_p:
+  avg_frames = 1722.0
+  avg_duration_sec = 14.3494
+  avg_root_path_length = 4.8438
+  avg_root_displacement = 1.5576
+  avg_pose_velocity_mean = 25.0650
+  avg_pose_variance_mean = 307.9503
+  avg_lag_20_repeat_fraction_0.995 = 0.0
+  early_stop_rate = 0.25
+```
+
+Interpretation:
+
+- The suite can summarize an existing comparison directory without regenerating
+  BVHs.
+- This is not a success claim for the fine-tuned GPT.  The fine-tuned rollout is
+  longer on average, but it also has higher pose velocity/variance and one of
+  four prompts is still below the 1200-frame threshold.
+
+### Smoke: retrieval-only backup suite
+
+Initial failure:
+
+```text
+retrieval_validation.ok = false
+repeat_violations:
+  start=0, length=8
+  start=39, length=9
+```
+
+This showed that deterministic retrieval-only token plans can copy a snippet
+with long identical-tuple runs.  The suite now enables repeat-run trimming for
+retrieval-only backup by default and records the repair count in each
+`retrieval_validation.json`.
+
+Second failure:
+
+```text
+FileNotFoundError: ./simple_motion_data.h5
+```
+
+This exposed an implicit current-directory dependency in the MoConVQ agent
+builder.  The backup decoder now accepts `--motion-dataset`, and the suite
+passes the resolved dataset path explicitly.
+
+Third failure:
+
+```text
+TypeError: build_loaded_moconvq_agent() got an unexpected keyword argument 'motion_dataset'
+```
+
+This was caused by direct script execution from the temporary worktree importing
+`Script.stage1.real_moconvq_cache` from another checkout.  The script now
+preprends its own repo root to `sys.path`.
+
+Final smoke command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python Script/stage1/run_stage1_model_suite.py \
+  --run-id suite_backup_retrieval_smoke_20260613 \
+  --suite-dir stage1_artifacts/model_suite/suite_backup_retrieval_smoke_20260613 \
+  --skip-gpt \
+  --finetuned-checkpoint stage1_artifacts/checkpoints/filtered_stage1_20260612_181802/best_val.pth \
+  --backup-cache /home/chenjie/cc/robotics/MoConVQ/stage1_artifacts/gpt_cache_filtered_cache_stage1_20260612_174908/train_cache.pt \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --backup-max-examples 40 \
+  --backup-max-tokens-per-example 24 \
+  --backup-min-tokens-per-example 8 \
+  --backup-top-k 3 \
+  --backup-segment-token-count 18 \
+  --expected-min-frames 1200 \
+  --gpu 0
+```
+
+Result:
+
+```text
+example_bank examples_written = 40
+
+walk_turn_wave:
+  tokens = 47, repeat_repairs = 7, frames = 1128
+circle_crouch_stand:
+  tokens = 50, repeat_repairs = 4, frames = 1200
+walk_jump_dance:
+  tokens = 51, repeat_repairs = 3, frames = 1224
+sidestep_kick_turn:
+  tokens = 54, repeat_repairs = 0, frames = 1296
+
+backup_retrieval model averages:
+  avg_frames = 1212.0
+  avg_duration_sec = 10.0996
+  avg_root_path_length = 2.5058
+  avg_root_displacement = 0.6933
+  avg_pose_velocity_mean = 20.8206
+  avg_pose_variance_mean = 192.8391
+  avg_lag_20_repeat_fraction_0.995 = 0.0
+  early_stop_rate = 0.25
+```
+
+Interpretation:
+
+- The LLM-token backup engineering route can now enter the same suite format as
+  GPT baseline and fine-tuned generation.
+- This smoke used retrieval-only planning, not an actual external LLM response.
+  It is therefore a deterministic lower bound and decoder validation, not a
+  semantic-quality claim.
+- The next useful backup experiment is to use the generated `prompt.txt` files
+  with an actual LLM, validate the JSON responses through the suite, render the
+  resulting BVHs, and compare semantic completion prompt by prompt.
+
+### Verification
+
+Commands run in this clean worktree:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/run_stage1_model_suite.py \
+  Script/stage1/llm_token_planning.py \
+  Script/stage1/real_moconvq_cache.py \
+  tests/test_stage1_model_suite.py \
+  tests/test_stage1_llm_token_planning.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_model_suite \
+  tests.test_stage1_llm_token_planning \
+  tests.test_stage1_text_gpt_comparison \
+  tests.test_stage1_bvh_metrics \
+  tests.test_stage1_repository_hygiene \
+  tests.test_stage1_real_cache \
+  -v
+```
+
+Result:
+
+```text
+py_compile passed
+35 tests passed, 1 skipped
+```

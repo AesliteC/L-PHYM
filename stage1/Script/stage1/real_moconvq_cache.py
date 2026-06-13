@@ -5,6 +5,7 @@ from typing import Callable, Iterable
 import argparse
 from functools import lru_cache
 import json
+import sys
 import traceback
 
 import h5py
@@ -39,6 +40,7 @@ MOCONVQ_BODY_NAMES = (
 DEFAULT_TEXT_GPT_BLOCK_SIZE = 52
 DEFAULT_MOCONVQ_WORLD_JSON = Path(__file__).resolve().parents[2] / "Data/Misc/world.json"
 ROTATION_CALIBRATION_CHOICES = ("none", "rest")
+ROTATION_SOURCE_CHOICES = ("heuristic", "humanml_vec6d")
 CACHE_SAMPLE_MODE_CHOICES = ("window", "segment_prefix")
 
 MOCONVQ_PARENT = np.asarray(
@@ -109,6 +111,73 @@ def _ensure_quat_continuity(quats: np.ndarray) -> np.ndarray:
     return fixed
 
 
+def _cont6d_to_matrix(cont6d: np.ndarray) -> np.ndarray:
+    if cont6d.shape[-1] != 6:
+        raise ValueError(f"expected cont6d last dim 6, got {cont6d.shape}")
+    x_raw = cont6d[..., 0:3].astype(np.float64)
+    y_raw = cont6d[..., 3:6].astype(np.float64)
+    x_norm = np.linalg.norm(x_raw, axis=-1, keepdims=True)
+    x = x_raw / np.maximum(x_norm, 1e-8)
+    z = np.cross(x, y_raw)
+    z_norm = np.linalg.norm(z, axis=-1, keepdims=True)
+    z = z / np.maximum(z_norm, 1e-8)
+    y = np.cross(z, x)
+    return np.stack([x, y, z], axis=-1).astype(np.float32)
+
+
+def _humanml3d_root_yaw_matrices(joint_vecs_263: np.ndarray) -> np.ndarray:
+    rot_vel = joint_vecs_263[:, 0].astype(np.float32)
+    root_yaw_half = np.zeros_like(rot_vel, dtype=np.float32)
+    if len(rot_vel) > 1:
+        root_yaw_half[1:] = rot_vel[:-1]
+    root_yaw_half = np.cumsum(root_yaw_half, axis=0)
+    xyzw = np.zeros((len(joint_vecs_263), 4), dtype=np.float32)
+    xyzw[:, 1] = np.sin(root_yaw_half)
+    xyzw[:, 3] = np.cos(root_yaw_half)
+    return Rotation.from_quat(xyzw).as_matrix().astype(np.float32)
+
+
+def humanml3d_joint_vecs_to_global_quats_xyzw(joint_vecs_263: np.ndarray) -> np.ndarray:
+    """Recover HumanML3D global joint rotations from the 263-d motion vector.
+
+    HumanML3D's representation stores root yaw velocity plus 21 local joint
+    rotations in continuous 6D form.  This helper reconstructs global 22-joint
+    rotations using the official HumanML3D/T2M kinematic tree layout, but keeps
+    the output in SciPy/MoConVQ quaternion order `(x, y, z, w)`.
+    """
+
+    if joint_vecs_263.ndim != 2 or joint_vecs_263.shape[1] != 263:
+        raise ValueError(f"expected joint_vecs_263 shape (T, 263), got {joint_vecs_263.shape}")
+    frames = joint_vecs_263.shape[0]
+    local_cont6d = np.zeros((frames, 22, 6), dtype=np.float32)
+    local_cont6d[:, 0, 0] = 1.0
+    local_cont6d[:, 0, 4] = 1.0
+    rot_start = 4 + (22 - 1) * 3
+    rot_end = rot_start + (22 - 1) * 6
+    local_cont6d[:, 1:, :] = joint_vecs_263[:, rot_start:rot_end].reshape(frames, 21, 6)
+    local_mats = _cont6d_to_matrix(local_cont6d)
+    root_mats = _humanml3d_root_yaw_matrices(joint_vecs_263)
+
+    # HumanML3D/T2M kinematic tree from HumanML3D/paramUtil.py.
+    chains = (
+        (0, 2, 5, 8, 11),
+        (0, 1, 4, 7, 10),
+        (0, 3, 6, 9, 12, 15),
+        (9, 14, 17, 19, 21),
+        (9, 13, 16, 18, 20),
+    )
+    global_mats = np.zeros((frames, 22, 3, 3), dtype=np.float32)
+    global_mats[:, 0] = root_mats
+    for chain in chains:
+        current = root_mats.copy()
+        for joint_id in chain[1:]:
+            current = np.matmul(current, local_mats[:, joint_id])
+            global_mats[:, joint_id] = current
+
+    quats = Rotation.from_matrix(global_mats.reshape(-1, 3, 3)).as_quat().reshape(frames, 22, 4)
+    return _ensure_quat_continuity(quats.astype(np.float32))
+
+
 @lru_cache(maxsize=8)
 def _load_moconvq_world_rest_pose(world_json_path: str) -> tuple[np.ndarray, np.ndarray]:
     with Path(world_json_path).open("r", encoding="utf-8") as f:
@@ -172,6 +241,25 @@ def apply_moconvq_rotation_calibration(
     return calibrated
 
 
+def apply_identity_source_rotation_calibration(
+    quats: np.ndarray,
+    mode: str = "rest",
+    world_json_path: Path | str | None = None,
+) -> np.ndarray:
+    if mode not in ROTATION_CALIBRATION_CHOICES:
+        raise ValueError(f"unknown rotation calibration mode: {mode}")
+    if mode == "none":
+        return quats.astype(np.float32, copy=True)
+    if quats.ndim != 3 or quats.shape[1:] != (len(MOCONVQ_BODY_NAMES), 4):
+        raise ValueError(f"expected quaternion shape (T, 20, 4), got {quats.shape}")
+    world_path = Path(world_json_path) if world_json_path is not None else DEFAULT_MOCONVQ_WORLD_JSON
+    _, target_rest = _load_moconvq_world_rest_pose(str(world_path.resolve()))
+    frames = quats.shape[0]
+    current = Rotation.from_quat(quats.reshape(-1, 4))
+    target = Rotation.from_quat(np.tile(target_rest[None, :, :], (frames, 1, 1)).reshape(-1, 4))
+    return (current * target).as_quat().reshape(quats.shape).astype(np.float32)
+
+
 def _linear_velocity(values: np.ndarray, fps: int) -> np.ndarray:
     velocity = np.zeros_like(values, dtype=np.float32)
     if len(values) < 2:
@@ -194,24 +282,44 @@ def _angular_velocity(quats: np.ndarray, fps: int) -> np.ndarray:
 
 def humanml3d_joints_to_moconvq_state(
     joints_22: np.ndarray,
+    joint_vecs_263: np.ndarray | None = None,
     fps: int = 20,
+    rotation_source: str = "heuristic",
     rotation_calibration: str = "rest",
     world_json_path: Path | str | None = None,
 ) -> np.ndarray:
     if joints_22.ndim != 3 or joints_22.shape[1:] != (22, 3):
         raise ValueError(f"expected joints shape (T, 22, 3), got {joints_22.shape}")
+    if rotation_source not in ROTATION_SOURCE_CHOICES:
+        raise ValueError(f"unknown rotation_source: {rotation_source}")
     positions = joints_22[:, HUMANML3D_TO_MOCONVQ, :].astype(np.float32)
-    quats = np.zeros((positions.shape[0], 20, 4), dtype=np.float32)
-    for t in range(positions.shape[0]):
-        axes = _frame_axes(joints_22[t].astype(np.float32))
-        for body_id in range(20):
-            quats[t, body_id] = _bone_quat(body_id, positions[t], axes)
-    quats = _ensure_quat_continuity(quats)
-    quats = apply_moconvq_rotation_calibration(
-        quats,
-        mode=rotation_calibration,
-        world_json_path=world_json_path,
-    )
+    if rotation_source == "humanml_vec6d":
+        if joint_vecs_263 is None:
+            raise ValueError("rotation_source='humanml_vec6d' requires joint_vecs_263")
+        if len(joint_vecs_263) != len(joints_22):
+            raise ValueError(
+                "joints_22 and joint_vecs_263 length mismatch: "
+                f"{len(joints_22)} != {len(joint_vecs_263)}"
+            )
+        humanml_quats = humanml3d_joint_vecs_to_global_quats_xyzw(joint_vecs_263)
+        quats = humanml_quats[:, HUMANML3D_TO_MOCONVQ, :].astype(np.float32)
+        quats = apply_identity_source_rotation_calibration(
+            quats,
+            mode=rotation_calibration,
+            world_json_path=world_json_path,
+        )
+    else:
+        quats = np.zeros((positions.shape[0], 20, 4), dtype=np.float32)
+        for t in range(positions.shape[0]):
+            axes = _frame_axes(joints_22[t].astype(np.float32))
+            for body_id in range(20):
+                quats[t, body_id] = _bone_quat(body_id, positions[t], axes)
+        quats = _ensure_quat_continuity(quats)
+        quats = apply_moconvq_rotation_calibration(
+            quats,
+            mode=rotation_calibration,
+            world_json_path=world_json_path,
+        )
     quats = _ensure_quat_continuity(quats)
     linear_vel = _linear_velocity(positions, fps=fps)
     angular_vel = _angular_velocity(quats, fps=fps)
@@ -268,6 +376,49 @@ def encode_observation_with_agent(agent, observation: np.ndarray, rvq_depth: int
     if latent.shape[-1] != 768:
         raise ValueError(f"expected latent dim 768, got {latent.shape}")
     return latent, indices
+
+
+def summarize_observation_abs_z(agent, observation: np.ndarray) -> dict[str, float]:
+    """Summarize how far converted HumanML3D observations are from MoConVQ data.
+
+    MoConVQ stores the observation normalization statistics used by the encoder.
+    Large normalized outliers are a useful proxy for retarget failures before we
+    spend time encoding and training on those sequences.
+    """
+
+    obs_mean = agent.obs_mean.detach().cpu().numpy().astype(np.float32)
+    obs_std = agent.obs_std.detach().cpu().numpy().astype(np.float32)
+    if obs_mean.shape != (observation.shape[-1],) or obs_std.shape != (observation.shape[-1],):
+        raise ValueError(
+            "agent observation statistics do not match converted observation: "
+            f"mean={obs_mean.shape}, std={obs_std.shape}, observation={observation.shape}"
+        )
+    abs_z = np.abs((observation.astype(np.float32) - obs_mean) / (obs_std + 1e-8))
+    return {
+        "mean_abs_z": float(np.mean(abs_z)),
+        "p95_abs_z": float(np.percentile(abs_z, 95)),
+        "p99_abs_z": float(np.percentile(abs_z, 99)),
+        "max_abs_z": float(np.max(abs_z)),
+        "frac_gt_3": float(np.mean(abs_z > 3.0)),
+        "frac_gt_5": float(np.mean(abs_z > 5.0)),
+        "frac_gt_10": float(np.mean(abs_z > 10.0)),
+    }
+
+
+def observation_quality_rejection_reason(
+    quality: dict[str, float],
+    max_p99_abs_z: float | None = None,
+    max_frac_gt_5: float | None = None,
+    max_frac_gt_10: float | None = None,
+) -> str | None:
+    reasons = []
+    if max_p99_abs_z is not None and quality["p99_abs_z"] > max_p99_abs_z:
+        reasons.append(f"p99_abs_z={quality['p99_abs_z']:.4f}>{max_p99_abs_z:.4f}")
+    if max_frac_gt_5 is not None and quality["frac_gt_5"] > max_frac_gt_5:
+        reasons.append(f"frac_gt_5={quality['frac_gt_5']:.6f}>{max_frac_gt_5:.6f}")
+    if max_frac_gt_10 is not None and quality["frac_gt_10"] > max_frac_gt_10:
+        reasons.append(f"frac_gt_10={quality['frac_gt_10']:.6f}>{max_frac_gt_10:.6f}")
+    return "; ".join(reasons) if reasons else None
 
 
 def make_windows(
@@ -539,8 +690,13 @@ def build_cache_from_long_h5(
     forced_transition_margin: int = 0,
     text_model: str | None = None,
     max_text_length: int | None = None,
+    rotation_source: str = "heuristic",
     rotation_calibration: str = "rest",
     world_json_path: Path | str | None = None,
+    max_observation_p99_abs_z: float | None = None,
+    max_observation_frac_gt_5: float | None = None,
+    max_observation_frac_gt_10: float | None = None,
+    progress_every: int = 0,
 ) -> tuple[dict[str, object], list[dict[str, str]]]:
     if caption_mode not in {"sequence", "window"}:
         raise ValueError(f"unknown caption_mode: {caption_mode}")
@@ -573,10 +729,23 @@ def build_cache_from_long_h5(
     prefix_lengths = []
     sample_ids_all = []
     failures: list[dict[str, str]] = []
+    filtered_sequences: list[dict[str, object]] = []
+    observation_quality_rows: list[dict[str, object]] = []
     encoded_text_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    should_filter_observation = any(
+        item is not None
+        for item in (
+            max_observation_p99_abs_z,
+            max_observation_frac_gt_5,
+            max_observation_frac_gt_10,
+        )
+    )
+    can_record_observation_quality = hasattr(agent, "obs_mean") and hasattr(agent, "obs_std")
 
     with h5py.File(long_h5_path, "r") as h5:
-        for sequence_id in h5.keys():
+        sequence_keys = list(h5.keys())
+        total_sequence_count = len(sequence_keys)
+        for sequence_number, sequence_id in enumerate(sequence_keys, start=1):
             try:
                 row = manifest.get(sequence_id, {})
                 group = h5[sequence_id]
@@ -585,13 +754,44 @@ def build_cache_from_long_h5(
                 if sample_ids is None:
                     sample_ids = str(group.attrs.get("sample_ids", "")).split(",")
                 joints = group["joints_22"][:]
+                joint_vecs = group["joint_vecs_263"][:] if "joint_vecs_263" in group else None
                 state = humanml3d_joints_to_moconvq_state(
                     joints,
+                    joint_vecs_263=joint_vecs,
                     fps=fps,
+                    rotation_source=rotation_source,
                     rotation_calibration=rotation_calibration,
                     world_json_path=world_json_path,
                 )
                 observation = moconvq_state_to_observation(state)
+                if should_filter_observation and not can_record_observation_quality:
+                    failures.append(
+                        {
+                            "sequence_id": str(sequence_id),
+                            "reason": "observation filtering requires agent.obs_mean and agent.obs_std",
+                            "traceback_short": "AttributeError: agent.obs_mean/obs_std missing",
+                        }
+                    )
+                    continue
+                if can_record_observation_quality:
+                    observation_quality = summarize_observation_abs_z(agent, observation)
+                    observation_quality_rows.append({"sequence_id": str(sequence_id), **observation_quality})
+                    if should_filter_observation:
+                        rejection_reason = observation_quality_rejection_reason(
+                            observation_quality,
+                            max_p99_abs_z=max_observation_p99_abs_z,
+                            max_frac_gt_5=max_observation_frac_gt_5,
+                            max_frac_gt_10=max_observation_frac_gt_10,
+                        )
+                        if rejection_reason is not None:
+                            filtered_sequences.append(
+                                {
+                                    "sequence_id": str(sequence_id),
+                                    "reason": rejection_reason,
+                                    **observation_quality,
+                                }
+                            )
+                            continue
                 latent, index = encode_observation_with_agent(agent, observation, rvq_depth=rvq_depth)
                 latent_clip_boundaries = _latent_clip_boundaries_from_row(
                     row,
@@ -704,6 +904,22 @@ def build_cache_from_long_h5(
                         "traceback_short": "".join(traceback.format_exception_only(type(exc), exc)).strip(),
                     }
                 )
+            finally:
+                if progress_every and sequence_number % progress_every == 0:
+                    print(
+                        json.dumps(
+                            {
+                                "processed_sequences": sequence_number,
+                                "total_sequences": total_sequence_count,
+                                "windows": len(latents_all),
+                                "filtered_sequences": len(filtered_sequences),
+                                "failed_sequences": len(failures),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
     cache = {
         "latents": torch.from_numpy(np.stack(latents_all, axis=0)) if latents_all else torch.empty((0, window_size, 768)),
@@ -723,6 +939,8 @@ def build_cache_from_long_h5(
         "segment_progress": torch.as_tensor(segment_progresses, dtype=torch.float32),
         "prefix_lengths": torch.as_tensor(prefix_lengths, dtype=torch.long),
         "sample_ids": sample_ids_all,
+        "filtered_sequences": filtered_sequences,
+        "observation_quality": observation_quality_rows,
         "config": {
             "long_h5": str(long_h5_path),
             "manifest": str(manifest_path),
@@ -738,14 +956,18 @@ def build_cache_from_long_h5(
             "forced_transition_margin": forced_transition_margin,
             "text_model": text_model,
             "max_text_length": max_text_length,
+            "rotation_source": rotation_source,
             "rotation_calibration": rotation_calibration,
             "world_json": str(world_json_path) if world_json_path is not None else str(DEFAULT_MOCONVQ_WORLD_JSON),
+            "max_observation_p99_abs_z": max_observation_p99_abs_z,
+            "max_observation_frac_gt_5": max_observation_frac_gt_5,
+            "max_observation_frac_gt_10": max_observation_frac_gt_10,
         },
     }
     return cache, failures
 
 
-def build_loaded_moconvq_agent(gpu: int, base_data: Path):
+def build_loaded_moconvq_agent(gpu: int, base_data: Path, motion_dataset: Path | None = None):
     import argparse as _argparse
 
     import MoConVQCore.Utils.pytorch_utils as ptu
@@ -768,6 +990,8 @@ def build_loaded_moconvq_agent(gpu: int, base_data: Path):
     args = vars(parser.parse_args(args=[]))
     args.update(flatten_dict(load_yaml(args["config_file"])))
     args["gpu"] = gpu
+    if motion_dataset is not None:
+        args["motion_dataset"] = str(motion_dataset)
     ptu.init_gpu(True, gpu_id=gpu)
     env = VCLODETrackEnv(**args)
     agent = MoConVQ(323, 12, 57, 120, env, training=False, **args)
@@ -797,7 +1021,12 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--prefix-size", type=int, default=25)
     parser.add_argument("--forced-transition-margin", type=int, default=0)
     parser.add_argument("--rotation-calibration", choices=ROTATION_CALIBRATION_CHOICES, default="rest")
+    parser.add_argument("--rotation-source", choices=ROTATION_SOURCE_CHOICES, default="heuristic")
     parser.add_argument("--world-json", default=str(DEFAULT_MOCONVQ_WORLD_JSON))
+    parser.add_argument("--max-observation-p99-abs-z", type=float, default=None)
+    parser.add_argument("--max-observation-frac-gt-5", type=float, default=None)
+    parser.add_argument("--max-observation-frac-gt-10", type=float, default=None)
+    parser.add_argument("--progress-every", type=int, default=0)
     parser.add_argument("--output", required=True)
     parser.add_argument("--failure-log", required=True)
     args = parser.parse_args(argv)
@@ -823,8 +1052,13 @@ def main(argv: Iterable[str] | None = None) -> None:
         forced_transition_margin=args.forced_transition_margin,
         text_model=args.text_model,
         max_text_length=args.max_text_length,
+        rotation_source=args.rotation_source,
         rotation_calibration=args.rotation_calibration,
         world_json_path=Path(args.world_json),
+        max_observation_p99_abs_z=args.max_observation_p99_abs_z,
+        max_observation_frac_gt_5=args.max_observation_frac_gt_5,
+        max_observation_frac_gt_10=args.max_observation_frac_gt_10,
+        progress_every=args.progress_every,
     )
 
     output = Path(args.output)
@@ -839,6 +1073,7 @@ def main(argv: Iterable[str] | None = None) -> None:
 
     total_sequences = len(set(cache["sequence_ids"])) + len(failures)
     failure_rate = len(failures) / max(total_sequences, 1)
+    filtered_sequences = cache.get("filtered_sequences", [])
     if cache["indices"].numel() > 0:
         idx_min = int(cache["indices"][cache["indices"] != 513].min()) if torch.any(cache["indices"] != 513) else 513
         idx_max = int(cache["indices"][cache["indices"] != 513].max()) if torch.any(cache["indices"] != 513) else 513
@@ -857,6 +1092,11 @@ def main(argv: Iterable[str] | None = None) -> None:
                 "sample_mode": cache["config"]["sample_mode"],
                 "prefix_size": cache["config"]["prefix_size"],
                 "forced_transition_margin": cache["config"]["forced_transition_margin"],
+                "rotation_source": cache["config"]["rotation_source"],
+                "filtered_sequences": len(filtered_sequences),
+                "max_observation_p99_abs_z": cache["config"]["max_observation_p99_abs_z"],
+                "max_observation_frac_gt_5": cache["config"]["max_observation_frac_gt_5"],
+                "max_observation_frac_gt_10": cache["config"]["max_observation_frac_gt_10"],
             },
             indent=2,
         )

@@ -39,7 +39,20 @@ def _toy_joints(length: int = 24) -> np.ndarray:
     return joints
 
 
+def _toy_joint_vecs(length: int = 24) -> np.ndarray:
+    vecs = np.zeros((length, 263), dtype=np.float32)
+    rot_start = 4 + 21 * 3
+    rot = np.zeros((length, 21, 6), dtype=np.float32)
+    rot[..., 0] = 1.0
+    rot[..., 4] = 1.0
+    vecs[:, rot_start : rot_start + 21 * 6] = rot.reshape(length, -1)
+    return vecs
+
+
 class _FakeAgent:
+    obs_mean = torch.zeros(323, dtype=torch.float32)
+    obs_std = torch.ones(323, dtype=torch.float32)
+
     def encode_seq_all(self, obs, target):
         self.last_target_shape = target.shape
         latent = torch.ones((1, 6, 768), dtype=torch.float32)
@@ -80,6 +93,95 @@ class Stage1RealCacheTests(unittest.TestCase):
         self.assertEqual(observation.shape, (24, 323))
         self.assertTrue(np.isfinite(observation).all())
 
+    def test_humanml_vec6d_rotation_source_has_moconvq_shapes(self):
+        from Script.stage1.real_moconvq_cache import humanml3d_joints_to_moconvq_state
+
+        state = humanml3d_joints_to_moconvq_state(
+            _toy_joints(),
+            joint_vecs_263=_toy_joint_vecs(),
+            fps=20,
+            rotation_source="humanml_vec6d",
+        )
+
+        self.assertEqual(state.shape, (24, 20, 13))
+        self.assertTrue(np.isfinite(state).all())
+
+    def test_humanml_vec6d_recovery_matches_processed_humanml_joints(self):
+        hml_root = Path(__file__).resolve().parents[2] / "HumanML3D" / "HumanML3D"
+        vec_paths = sorted((hml_root / "new_joint_vecs").glob("*.npy"))
+        if not vec_paths:
+            self.skipTest("HumanML3D new_joint_vecs are not available")
+
+        from Script.stage1.real_moconvq_cache import _cont6d_to_matrix, _humanml3d_root_yaw_matrices
+
+        sample_id = vec_paths[0].stem
+        vecs = np.load(hml_root / "new_joint_vecs" / f"{sample_id}.npy")
+        joints = np.load(hml_root / "new_joints" / f"{sample_id}.npy")
+
+        frames = len(vecs)
+        rot_start = 4 + 21 * 3
+        cont6d = np.zeros((frames, 22, 6), dtype=np.float32)
+        cont6d[:, 0, 0] = 1.0
+        cont6d[:, 0, 4] = 1.0
+        cont6d[:, 1:] = vecs[:, rot_start : rot_start + 21 * 6].reshape(frames, 21, 6)
+        local_mats = _cont6d_to_matrix(cont6d)
+        root_mats = _humanml3d_root_yaw_matrices(vecs)
+        chains = (
+            (0, 2, 5, 8, 11),
+            (0, 1, 4, 7, 10),
+            (0, 3, 6, 9, 12, 15),
+            (9, 14, 17, 19, 21),
+            (9, 13, 16, 18, 20),
+        )
+        raw_offsets = np.asarray(
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [-1, 0, 0],
+                [0, 1, 0],
+                [0, -1, 0],
+                [0, -1, 0],
+                [0, 1, 0],
+                [0, -1, 0],
+                [0, -1, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [0, 0, 1],
+                [0, 1, 0],
+                [1, 0, 0],
+                [-1, 0, 0],
+                [0, 0, 1],
+                [0, -1, 0],
+                [0, -1, 0],
+                [0, -1, 0],
+                [0, -1, 0],
+                [0, -1, 0],
+                [0, -1, 0],
+            ],
+            dtype=np.float32,
+        )
+        parents = [-1] * 22
+        for chain in chains:
+            for idx in range(1, len(chain)):
+                parents[chain[idx]] = chain[idx - 1]
+        offsets = raw_offsets.copy()
+        for joint_id in range(1, 22):
+            bone_length = np.linalg.norm(joints[0, joint_id] - joints[0, parents[joint_id]])
+            offsets[joint_id] = raw_offsets[joint_id] * bone_length
+        recovered = np.zeros_like(joints)
+        recovered[:, 0] = joints[:, 0]
+        for chain in chains:
+            current = root_mats.copy()
+            for idx in range(1, len(chain)):
+                joint_id = chain[idx]
+                parent_id = chain[idx - 1]
+                current = np.matmul(current, local_mats[:, joint_id])
+                recovered[:, joint_id] = (
+                    current @ offsets[joint_id][None, :, None]
+                ).squeeze(-1) + recovered[:, parent_id]
+
+        self.assertLess(float(np.linalg.norm(recovered - joints, axis=-1).mean()), 1e-4)
+
     def test_rest_rotation_calibration_aligns_heuristic_rest_with_moconvq_world(self):
         from Script.stage1.real_moconvq_cache import (
             apply_moconvq_rotation_calibration,
@@ -101,6 +203,7 @@ class Stage1RealCacheTests(unittest.TestCase):
             with h5py.File(long_h5, "w") as h5:
                 group = h5.create_group("seq_000")
                 group.create_dataset("joints_22", data=_toy_joints())
+                group.create_dataset("joint_vecs_263", data=_toy_joint_vecs())
                 group.attrs["caption"] = "walk then turn"
                 group.attrs["sample_ids"] = "000001,000002"
             manifest.write_text(
@@ -124,6 +227,7 @@ class Stage1RealCacheTests(unittest.TestCase):
                 window_stride=5,
                 rvq_depth=4,
                 fps=20,
+                rotation_source="humanml_vec6d",
             )
 
             self.assertEqual(failures, [])
@@ -132,7 +236,54 @@ class Stage1RealCacheTests(unittest.TestCase):
             self.assertEqual(cache["text_features"].shape, (1, 8, 1024))
             self.assertEqual(cache["indices"][0, 6:].unique().item(), 513)
             self.assertEqual(cache["window_ranges"], [(0, 6)])
+            self.assertEqual(cache["config"]["rotation_source"], "humanml_vec6d")
             self.assertEqual(cache["config"]["rotation_calibration"], "rest")
+
+    def test_build_cache_can_filter_observation_outliers_without_conversion_failure(self):
+        from Script.stage1.real_moconvq_cache import build_cache_from_long_h5
+
+        class OutlierAgent(_FakeAgent):
+            obs_mean = torch.full((323,), -1000.0, dtype=torch.float32)
+            obs_std = torch.ones(323, dtype=torch.float32)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            long_h5 = tmp / "long.h5"
+            manifest = tmp / "manifest.jsonl"
+            with h5py.File(long_h5, "w") as h5:
+                group = h5.create_group("seq_000")
+                group.create_dataset("joints_22", data=_toy_joints())
+                group.attrs["caption"] = "walk"
+                group.attrs["sample_ids"] = "000001"
+            manifest.write_text(
+                '{"sequence_id":"seq_000","caption":"walk","sample_ids":["000001"]}\n',
+                encoding="utf-8",
+            )
+
+            def fake_text_encoder(captions):
+                return (
+                    np.ones((len(captions), 8, 1024), dtype=np.float32),
+                    np.zeros((len(captions), 8), dtype=bool),
+                )
+
+            cache, failures = build_cache_from_long_h5(
+                long_h5_path=long_h5,
+                manifest_path=manifest,
+                agent=OutlierAgent(),
+                text_encoder=fake_text_encoder,
+                window_size=10,
+                window_stride=5,
+                rvq_depth=4,
+                fps=20,
+                max_observation_p99_abs_z=10.0,
+            )
+
+            self.assertEqual(failures, [])
+            self.assertEqual(cache["latents"].shape[0], 0)
+            self.assertEqual(len(cache["filtered_sequences"]), 1)
+            self.assertEqual(cache["filtered_sequences"][0]["sequence_id"], "seq_000")
+            self.assertIn("p99_abs_z", cache["filtered_sequences"][0]["reason"])
+            self.assertEqual(cache["config"]["max_observation_p99_abs_z"], 10.0)
 
     def test_cache_rejects_windows_that_exceed_gpt_temporal_context(self):
         from Script.stage1.real_moconvq_cache import build_cache_from_long_h5
