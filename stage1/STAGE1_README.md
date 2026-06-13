@@ -453,10 +453,12 @@ observation z-score、短序列、以及低 z-score 但 depth0 token collapse。
 5 条样本 cache 有 18 个窗口、1440 个有效 token，depth0 top fraction 约 `0.039`，
 并通过 head-only 训练 smoke。该结果只证明筛选闭环可跑，不是最终训练集规模或模型质量结论。
 
-后续 50 条 train split 诊断已经验证相同闭环可以扩展到更大的 processed-HumanML3D
-样本批次：临时阈值接受 10 条、拒绝 40 条；accepted-only cache 有 39 个窗口、
-3120 个有效 token，depth0 top fraction 约 `0.041`，并能进入
-`train_real_text_gpt.py --train-scope head --smoke`。batch50 的拒绝原因主要是短序列、
+后续 50/100 条 train split 诊断已经验证相同闭环可以扩展到更大的
+processed-HumanML3D 样本批次。batch50 临时阈值接受 10 条、拒绝 40 条；
+accepted-only cache 有 39 个窗口、3120 个有效 token，depth0 top fraction 约
+`0.041`。batch100 临时阈值接受 16 条、拒绝 84 条；accepted-only cache 有 61 个
+窗口、4880 个有效 token，depth0 top fraction 约 `0.023`，并能进入
+`train_real_text_gpt.py --train-scope head --smoke`。主要拒绝原因是短序列、
 depth0 token collapse 和少量 retarget 后 observation z-score 异常。这说明
 HumanML3D 主线没有被放弃，但正式训练不能再盲目使用早期 hand-written retarget cache；
 `make_bvh_contact_sheet.py` 可把 quality summary 中的 accepted/rejected BVH 抽帧成

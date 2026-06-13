@@ -4836,3 +4836,274 @@ fine-tune against the baseline GPT.  If the accepted rate remains too low or
 videos show systematic retarget artifacts, restore original HumanML3D/AMASS
 source motion or BVH exports instead of overfitting to the processed-joints
 bridge.
+
+## 2026-06-13: Batch100 joints-IK export scale check
+
+### Purpose
+
+After batch50, the next question was whether the same processed-HumanML3D
+bridge remains stable at a slightly larger scale, and whether accepted-only
+cache diversity improves enough to justify moving toward a real train/val
+cache.  This run uses the same route:
+
+```text
+HumanML3D new_joints/new_joint_vecs
+-> export_humanml3d_to_bvh.py --rotation-source joints_ik
+-> MoConVQ native MotionDataSet.add_bvh_with_character()
+-> per-file quality summary
+-> accepted-only GPT cache
+-> token/contact-sheet/train-smoke diagnostics
+```
+
+### Export
+
+Command:
+
+```bash
+/usr/bin/time -f 'elapsed_sec=%e' \
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/export_humanml3d_to_bvh.py \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --split train \
+  --limit 100 \
+  --seed 47 \
+  --output-dir stage1_artifacts/humanml_bvh_export_ik_batch100_20260613 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_batch100_20260613/export_summary.json
+```
+
+Result:
+
+```text
+exports = 100
+frames min/max/avg = 48 / 199 / 146.97
+samples shorter than 120 frames = 38
+elapsed_sec = 50.05
+```
+
+### Native retarget diagnostic
+
+The first sandboxed `diagnose_bvh_character_retarget.py --per-file` attempt hit
+the same MPI/socket sandbox limitation seen in batch50:
+
+```text
+unable to create a socket, Operation not permitted
+```
+
+The same command succeeded after rerunning with escalated permissions.
+
+Aggregate result:
+
+```text
+state_shape = [14697, 20, 13]
+observation_shape = [14697, 323]
+RVQ token shape = [3674, 4]
+observation |z| mean = 0.711424
+p50 = 0.365297
+p90 = 1.609671
+p95 = 2.436284
+p99 = 5.521938
+max = 67.793686
+frac_gt_3 = 0.034255
+frac_gt_5 = 0.011879
+frac_gt_10 = 0.003274
+elapsed_sec = 42.70
+```
+
+Token distribution compared to native `simple_motion_data.h5`:
+
+| depth | exported unique | native unique | JS divergence bits | exported entropy | native entropy |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0 | 390 | 139 | 0.690223 | 7.605529 | 5.981861 |
+| 1 | 486 | 366 | 0.344627 | 8.431412 | 8.072053 |
+| 2 | 495 | 412 | 0.282668 | 8.399105 | 8.378403 |
+| 3 | 481 | 418 | 0.284419 | 8.124991 | 8.374331 |
+
+Compared with batch50, batch100 improves JS divergence at every RVQ depth and
+keeps aggregate observation p99 lower, but max z-score is still high.  The
+per-file filter remains necessary.
+
+### Quality filtering
+
+Default preliminary thresholds were unchanged:
+
+```text
+min_frames = 120
+min_tokens = 20
+max_p99_abs_z = 8.0
+max_max_abs_z = 50.0
+max_frac_gt_5 = 0.05
+max_depth0_top_frac = 0.25
+min_depth0_unique = 16
+```
+
+Result:
+
+```text
+total = 100
+accepted = 16
+rejected = 84
+accepted rate = 16%
+```
+
+Accepted labels:
+
+```text
+004123, M010515, M005678, M013375, 002805, 000473, 008008,
+M012311, 006742, 002381, 001001, 001289, 003806, M001709,
+M001507, 002198
+```
+
+Reject-reason counts:
+
+| reason | count |
+| --- | ---: |
+| depth0_unique<16 | 56 |
+| depth0_top_frac>0.25 | 48 |
+| frames<120 | 38 |
+| p99_abs_z>8 | 18 |
+| max_abs_z>50 | 13 |
+| tokens<20 | 10 |
+| frac_gt_5>0.05 | 1 |
+
+The accepted rate drops slightly from batch50's 20% to 16%.  This is not
+necessarily worse data: batch100 included many short or near-static clips.
+However, it confirms that the current processed-joints bridge needs substantial
+oversampling or a smarter source-sample selection strategy to build a large
+accepted-only train/val cache.
+
+### Filtered GPT cache
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch100_20260613/quality_summary.json \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 20 \
+  --window-stride 10 \
+  --fps 20 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch100_20260613/gpt_cache_filtered.pt \
+  --observation-h5 stage1_artifacts/humanml_bvh_export_ik_batch100_20260613/observations_filtered.h5 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_batch100_20260613/gpt_cache_filtered_summary.json
+```
+
+Result:
+
+```text
+windows = 61
+latents_shape = [61, 20, 768]
+indices_shape = [61, 20, 4]
+text_features_shape = [61, 256, 1024]
+valid_tokens = 4880
+index range = 0..511
+unique_sequences = 16
+```
+
+Filtered cache token distribution:
+
+| depth | tokens | unique | entropy bits | top frac |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 1220 | 221 | 7.289220 | 0.022951 |
+| 1 | 1220 | 322 | 7.984570 | 0.013934 |
+| 2 | 1220 | 314 | 7.898292 | 0.031148 |
+| 3 | 1220 | 317 | 7.777926 | 0.051639 |
+
+This is the healthiest accepted-only cache distribution so far.  It is still
+too small for a report-level fine-tune, but it is a useful pilot cache for
+training-pipeline checks.
+
+### Contact-sheet visual audit
+
+Generated:
+
+```text
+stage1_artifacts/humanml_bvh_export_ik_batch100_20260613/contact_sheet_accepted.png
+stage1_artifacts/humanml_bvh_export_ik_batch100_20260613/contact_sheet_rejected_top12.png
+```
+
+Accepted-sheet observations:
+
+- Most accepted rows remain upright and readable as stick-figure motion.
+- No large global inversion/prone failure appears in the accepted sheet.
+- Several accepted samples still need video checks before formal training:
+  `000473` includes crawling/get-up behavior; `002381`, `006742`, and
+  `M001709` include bending or large leg motion that sparse frames cannot fully
+  validate.
+
+Rejected top12 observations:
+
+- Rejected hard cases include rolling, floor/get-up, sitting, zombie-pose, and
+  high-bend motions.  These align with high z-score or token-collapse reasons.
+- Some walking/turning rows look superficially plausible in sparse frames but
+  are rejected by high p99/max z-score.  Do not relax thresholds based only on
+  contact sheets; MP4 inspection is needed for temporal discontinuities.
+
+### Training smoke
+
+An initial smoke with output under `stage1_artifacts/.../train_smoke_head`
+failed while saving `best_val.pth` because the repository filesystem was full:
+
+```text
+/dev/sda1  2.9T  2.8T  0  100%  /home/chenjie/cc/robotics
+PytorchStreamWriter failed writing file ... file write failed
+```
+
+The half-written checkpoint was removed, and the same smoke was rerun with
+`--output-dir /tmp/stage1_batch100_train_smoke_head`, where `/tmp` still had
+space:
+
+```text
+/dev/nvme0n1p3  885G  466G  375G  56%  /tmp
+```
+
+After a manual cleanup, the repository filesystem had about 42G available:
+
+```text
+/dev/sda1  2.9T  2.7T  42G  99%  /home/chenjie/cc/robotics
+```
+
+Result:
+
+```text
+GPU not detected. Defaulting to CPU.
+train_scope=head trainable_parameters=7880448
+epoch=0 train=9.7501/acc=0.0000 val=27.3806/acc=0.0750 elapsed=5.6s
+```
+
+This confirms the batch100 accepted-only cache can enter the training path.
+The train/val numbers are still smoke-only and should not be reported as model
+improvement.
+
+### Interpretation
+
+- Scaling from 50 to 100 source samples improves aggregate token distribution
+  and produces a cleaner accepted-only cache distribution.
+- The accepted yield remains low: 16 accepted out of 100 sampled clips.
+  Building a real fine-tuning set will likely require either:
+  - oversampling many more processed HumanML3D clips and filtering; or
+  - recovering original AMASS/HumanML3D source motion/BVH to reduce bridge
+    artifacts; or
+  - using a smarter prefilter to avoid short/static/acrobatics/floor-motion
+    clips that the current bridge handles poorly.
+- The `/home` filesystem is no longer at 0 bytes free after cleanup, but it is
+  still 99% used.  Formal training checkpoints and large generated videos
+  should be written to `/tmp` or another spacious filesystem, or old
+  `stage1_artifacts` should be cleaned intentionally before a long run.
+- A real LLM in-context experiment has still not been run.
+
+### Next action
+
+Do not start a full fine-tune from only 16 accepted sequences.  The next
+data-building step should either:
+
+```text
+oversample train split to collect roughly 100 accepted clips
+-> generate contact sheets/MP4 for accepted and top rejected rows
+-> build train/val accepted-only caches
+-> run conservative base_head/temporal_base_head fine-tune
+```
+
+or recover a more native HumanML3D/AMASS BVH/source-motion route if available.
