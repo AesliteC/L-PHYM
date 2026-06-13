@@ -79,6 +79,63 @@ MoConVQ 主仓库:       robotics/MoConVQ
 
 已配置环境：moconvq
 
+### 2.1 远程 main/stage1 同步约定
+
+真实实验工作目录是：
+
+```text
+/home/chenjie/cc/robotics/MoConVQ
+```
+
+GitHub 远程 `origin/main` 的仓库根目录不是 MoConVQ 本身，而是：
+
+```text
+README.md
+stage1/
+```
+
+因此 `MoConVQ/` 不能直接 track `origin/main` 的 `stage1/` 子目录。当前采用的安全工作流是：
+
+```text
+在 /home/chenjie/cc/robotics/MoConVQ 中运行实验和改代码
+  -> 同步可提交文件到 /home/chenjie/cc/robotics/MoConVQ-main/stage1
+  -> 从 /home/chenjie/cc/robotics/MoConVQ-main 提交
+  -> git push origin HEAD:main
+```
+
+同步脚本：
+
+```bash
+cd /home/chenjie/cc/robotics/MoConVQ
+python Script/stage1/sync_stage1_to_main_worktree.py
+```
+
+脚本默认排除本地实验大文件和私有 agent 文档：
+
+```text
+stage1_artifacts/
+*.h5
+*.pth
+*.data
+AGENT.md
+AGENTS.md
+CODEX.md
+CLAUDE.md
+.codex/
+.claude/
+```
+
+推送前必须从 `MoConVQ-main` 检查：
+
+```bash
+cd /home/chenjie/cc/robotics/MoConVQ-main
+git status --short --branch
+git ls-files | rg -i '(^|/)(AGENT\.md|AGENTS\.md|CODEX\.md|CLAUDE\.md|\.codex/|\.claude/)'
+git diff --cached --name-only | rg -i '(^|/)(AGENT\.md|AGENTS\.md|CODEX\.md|CLAUDE\.md|\.codex/|\.claude/)'
+```
+
+如果后两个命令有输出，说明私有 agent 文档被纳入 Git，需要先移除再提交。
+
 ## 3. 已完成内容
 
 ### 3.1 HumanML3D 数据读取

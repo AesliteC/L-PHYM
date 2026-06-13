@@ -6222,3 +6222,162 @@ The attempted resume exposed a training-script bug:
 - initializes `best_val_loss` from the existing log during append mode;
 - names periodic checkpoints by global epoch id, e.g. resumed epoch 4 writes
   `checkpoint_epoch_5.pth`.
+
+## 2026-06-13 True workdir sync and long-H5 BVH-native retarget smoke
+
+### Repository/workdir correction
+
+The true Stage1 experiment workdir is:
+
+```text
+/home/chenjie/cc/robotics/MoConVQ
+```
+
+The GitHub push target is not `origin/stage1`.  The remote `origin/main`
+contains Stage1 under:
+
+```text
+stage1/
+```
+
+Since Git cannot directly track a remote branch subdirectory as the root of a
+normal worktree, the current safe workflow is:
+
+```text
+MoConVQ/ experiments and edits
+  -> sync code/docs to MoConVQ-main/stage1/
+  -> commit from MoConVQ-main
+  -> git push origin HEAD:main
+```
+
+Added:
+
+```text
+Script/stage1/sync_stage1_to_main_worktree.py
+```
+
+This helper excludes local experiment outputs, model/data files, and private
+agent docs by default.
+
+After syncing, a content comparison excluding local data/artifacts reported no
+differences:
+
+```bash
+diff -qr \
+  --exclude=.git \
+  --exclude=stage1_artifacts \
+  --exclude=__pycache__ \
+  --exclude='*.pyc' \
+  --exclude='*.h5' \
+  --exclude='*.pth' \
+  --exclude='*.data' \
+  --exclude=midterm-report \
+  --exclude=midterm_figures \
+  --exclude=request.txt \
+  /home/chenjie/cc/robotics/MoConVQ \
+  /home/chenjie/cc/robotics/MoConVQ-main/stage1
+```
+
+### Long HumanML3D H5 to BVH bridge
+
+Added:
+
+```text
+Script/stage1/export_long_humanml3d_to_bvh.py
+```
+
+Purpose:
+
+```text
+synthesize_long_humanml3d.py output
+  long_sequences.h5 + manifest.jsonl
+-> long BVH files using the MoConVQ BVH template
+-> MoConVQ native MotionDataSet.add_bvh_with_character()
+-> GPT cache
+```
+
+Smoke command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/export_long_humanml3d_to_bvh.py \
+  --long-h5 stage1_artifacts/long_humanml3d_fixed/train/long_sequences.h5 \
+  --manifest stage1_artifacts/long_humanml3d_fixed/train/manifest.jsonl \
+  --limit 20 \
+  --output-dir /tmp/stage1_long_fixed_bvh_native_smoke_true_workdir_20260613/bvh \
+  --summary /tmp/stage1_long_fixed_bvh_native_smoke_true_workdir_20260613/export_summary.json \
+  --quiet
+```
+
+Result:
+
+```text
+exports = 20
+rotation_source = joints_ik
+```
+
+BVH metrics:
+
+```text
+rows = 20
+early_stop = 2
+```
+
+Native character retarget diagnostic:
+
+```text
+paths = 20
+state_shape = [8231, 20, 13]
+observation_shape = [8231, 323]
+token_shape = [2057, 4]
+p99_abs_z = 5.6049
+max_abs_z = 67.2166
+per_file = 20
+comparisons = 1
+```
+
+Quality summary:
+
+```text
+total = 20
+accepted = 11
+rejected = 9
+```
+
+Accepted GPT cache:
+
+```text
+windows = 40
+valid_tokens = 8000
+unique_sequences = 11
+```
+
+Token distribution for the accepted native-retarget long cache:
+
+| depth | top fraction | unique tokens |
+| --- | ---: | ---: |
+| 0 | 0.0530 | 225 |
+| 1 | 0.0315 | 342 |
+| 2 | 0.0835 | 379 |
+| 3 | 0.0755 | 350 |
+
+For comparison, the old hand-written HumanML3D-to-observation cache had much
+stronger token collapse:
+
+```text
+old fixed cache depth0 top fraction = 0.2171
+old fixed cache depth1 top fraction = 0.3342
+```
+
+### Interpretation
+
+This smoke result changes the diagnosis of Stage1:
+
+- the existing long-sequence synthesis is not the primary failure source;
+- the old hand-written HumanML3D-to-MoConVQ body-state/cache path is the likely
+  high-impact failure source;
+- the new long-H5-to-BVH bridge lets synthesized long sequences enter MoConVQ
+  through its native character retarget path and produces a much healthier RVQ
+  token distribution;
+- the next main experiment should scale this long BVH-native route, then train
+  and compare baseline vs fine-tuned generation on long prompts.
