@@ -2,6 +2,10 @@
 
 本文档用于说明本仓库当前 Stage1 的目标、已经实现的内容、运行方式、上传 GitHub 时应该包含哪些文件，以及后续还需要完成的工作。
 
+报告级最终摘要见 `STAGE1_FINAL_RESULT_SUMMARY.md`。该摘要只保留最终 pipeline、
+selected checkpoints、主要 FID/R-precision 表格、视频结论和 evaluator caveat；
+完整诊断过程仍记录在 `STAGE1_EXPERIMENT_LOG.md`。
+
 ## 1. 仓库目的
 
 本项目用于课程作业 Stage1：利用本地 `HumanML3D` 数据集合成长动作-文本序列，并将这些长序列转换成 MoConVQ 中 text-conditioned GPT 模型可以训练的格式，最后微调 `MoConVQ` 仓库里的 GPT 模型。
