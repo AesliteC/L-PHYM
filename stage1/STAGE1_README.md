@@ -795,7 +795,21 @@ python Script/stage1/evaluate_bvh_metrics.py \
   --output stage1_artifacts/generated_bvh_compare/<run_id>/summary_metrics_script.json
 ```
 
-MoConVQ 论文的正式 Text2Motion 量化指标是 HumanML3D test set 上的 FID 和 R-precision，依赖兼容的 HumanML3D/SMPL motion feature extractor。当前仓库尚未包含这套 evaluator，因此 Stage1 暂时用 BVH 工程指标和视频检查做中间诊断；最终“优于 baseline”的结论仍应补齐 FID/R-precision 或等价的文本-动作匹配评估。
+MoConVQ 论文的正式 Text2Motion 量化指标是 HumanML3D test set 上的 FID 和 R-precision，依赖兼容的 HumanML3D/SMPL motion feature extractor。当前仓库尚未包含完整 evaluator，因此 Stage1 暂时用 BVH 工程指标和视频检查做中间诊断；最终“优于 baseline”的论文级结论仍应补齐 FID/R-precision 或等价的文本-动作匹配评估。
+
+当前 readiness 检查已显式支持 T2M-GPT/text-to-motion evaluator 布局。需要的最小源码和资源是：
+
+```text
+models/evaluator_wrapper.py
+utils/eval_trans.py
+options/get_eval_option.py
+checkpoints/t2m/text_mot_match/model/finest.tar
+checkpoints/t2m/text_mot_match/opt.txt
+glove/our_vab_data.npy
+glove/our_vab_words.pkl
+```
+
+即使这些 evaluator assets 补齐，还需要把 MoConVQ 生成的 BVH/character motion 转回 HumanML3D 263-d motion feature 体系，FID/R-precision 才和论文指标可比。
 
 为了避免每次实验只比较单一路线，当前推荐把最终 Stage1 对比实验收敛到统一 suite：
 
@@ -1075,4 +1089,8 @@ stage1_artifacts/checkpoints/fixed_dataset_stage1_20260529_135401/best_val.pth
 
 ## 7. 当前状态一句话总结
 
-Stage1 的旧 fixed dataset 工程链路已经完整跑通，但旧 finetuned checkpoint 已判定无效：它改善了早停，却因训练/推理 latent 空间不一致、全量微调覆盖先验、以及 HumanML3D retarget/cache 质量不足导致视频质量差。当前代码已修复训练上下文 latent 重建，并把 HumanML3D 主线推进到 `joints_ik` BVH export -> MoConVQ-native character retarget -> per-file quality filter -> MP4-audit manual override -> deterministic accepted train/val split -> accepted-only GPT cache；batch500 filtered-v2 已产出 73 train / 18 val cache，并完成一次 5 epoch conservative `base_head` fine-tune 和 top-p baseline-vs-finetuned BVH/MP4 对比。该 run 的 val loss 从 17.6901 降到 15.3757，生成平均长度从 baseline 1062 frames 小幅升到 finetuned 1092 frames，早停率从 0.75 降到 0.50；但两个 prompt 基本没有变化，`walk_jump_dance` 还略短，同时 finetuned 的 pose velocity/variance 明显更高。因此当前结论仍是：新 HumanML3D BVH-to-character 路线可训练、可生成、未明显坍塌，但还不能声称优于 baseline。下一步应扩大 accepted BVH cache 规模或修复 CUDA 训练吞吐，再重复同一套 BVH 指标、MP4 和语义检查；如果主路线继续不能产生可信提升，再运行真实外部/本地 LLM 的 in-context token planning 备选路线。
+Stage1 的旧 fixed dataset 工程链路已经完整跑通，但旧 finetuned checkpoint 已判定无效：它改善了早停，却因训练/推理 latent 空间不一致、全量微调覆盖先验、以及 HumanML3D retarget/cache 质量不足导致视频质量差。当前代码已修复训练上下文 latent 重建，并把 HumanML3D 主线推进到 `long_sequences.h5` -> `joints_ik` BVH export -> MoConVQ-native character retarget -> per-file quality filter -> deterministic accepted train/val split -> accepted-only GPT cache。
+
+当前推荐的 Stage1 engineering 结果是 2026-06-13 的 long-native 200 条、head-only 5 epoch run：200 条长序列 BVH 中 91 条通过 native retarget/filter，形成 73 train / 18 val sequences、278 train windows 和 66 val windows；val loss 从 8.980 降到 8.443。top-p baseline-vs-finetuned 对比中，平均长度从 1062 frames 提升到 1194 frames，早停率从 0.75 降到 0.50，root path 从 3.472 提升到 4.187；pose velocity/variance 从 14.052 / 141.194 增至 19.133 / 190.011，说明动作更长、更活跃，但仍有一定稳定性代价。视频/contact sheet 上暂未看到明显摔倒、骨架翻转或全身崩坏，`circle_crouch_stand` 改善最明显，`walk_jump_dance` 和 `sidestep_kick_turn` 仍基本没有变化。
+
+因此当前结论是：长 HumanML3D 合成可用；旧 hand-written HumanML3D-to-state cache 不适合正式结论；BVH-to-character native retarget 是目前真正 work 的主线；保守 head-only GPT 微调已经在 Stage1 工程指标和视频观感上比 baseline 好一点，但还不是论文级胜出。论文指标 FID/R-precision 仍缺 evaluator checkpoint/glove assets，以及 MoConVQ BVH 到 HumanML3D 263-d feature 的 adapter。

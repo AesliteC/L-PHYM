@@ -6845,3 +6845,144 @@ pose velocity = 14.052 -> 19.133
 pose variance = 141.194 -> 190.011
 paper_metrics_ready = false
 ```
+
+## 2026-06-13 Prompt segmentation and evaluator readiness follow-up
+
+### Then-aware long prompt generation
+
+I rechecked the current inference path after the question about whether long
+prompts are split by `then`.
+
+The answer is yes for the main generation path used in the current best run:
+
+```text
+--generation-mode auto
+--segment-joiner " then "
+```
+
+In `Script/stage1/generate_long_motion.py`, `resolve_generation_mode("auto",
+text, " then ")` calls `split_text_segments()`.  If the prompt contains more
+than one non-empty segment after splitting on the joiner, it switches to
+segmented generation; otherwise it uses rolling generation.
+
+The segmented path:
+
+```text
+long prompt
+  -> split by " then "
+  -> encode each segment text separately
+  -> sample each segment with previous generated latents as context/prefix
+  -> concatenate segment latents
+  -> decode BVH
+```
+
+This means prompts like:
+
+```text
+a person walks forward then turns around then waves both arms
+```
+
+are not treated as one monolithic fixed text condition in the current default
+`auto` setup.  They are split into local text conditions while preserving motion
+history across segments.
+
+Existing regression tests cover this behavior:
+
+```text
+tests/test_stage1_real_generate.py
+  test_auto_generation_mode_selects_segmented_for_joined_text
+  test_segmented_generation_uses_local_text_per_segment
+  test_segmented_generation_carries_previous_segment_latents_as_context
+```
+
+Current limitation: the splitter is still literal joiner-based.  It handles the
+default English `" then "` separator used by Stage1 synthetic captions and
+prompt suites, but it does not yet parse Chinese "然后" or more general
+multi-clause syntax.
+
+### Paper-metric readiness check strengthened
+
+I strengthened `Script/stage1/check_evaluation_readiness.py` so the readiness
+report explicitly checks a T2M-GPT/text-to-motion-compatible evaluator layout.
+The expected source files and assets are:
+
+```text
+models/evaluator_wrapper.py
+utils/eval_trans.py
+options/get_eval_option.py
+checkpoints/t2m/text_mot_match/model/finest.tar
+checkpoints/t2m/text_mot_match/opt.txt
+glove/our_vab_data.npy
+glove/our_vab_words.pkl
+```
+
+Validation:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/check_evaluation_readiness.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_evaluation_readiness -v
+```
+
+Result:
+
+```text
+3 tests passed
+```
+
+Current local readiness:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/check_evaluation_readiness.py \
+  --repo-root . \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --output /tmp/stage1_eval_readiness_current.json
+```
+
+Result:
+
+```text
+paper_metrics_ready = false
+missing:
+  - HumanML3D text-motion evaluator source files
+  - pretrained HumanML3D evaluator / motion-feature extractor checkpoints
+```
+
+T2M-GPT source-only inspection:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/check_evaluation_readiness.py \
+  --repo-root . \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --evaluator-root /tmp/T2M-GPT-stage1-inspect \
+  --output /tmp/stage1_eval_readiness_t2m_source_only.json
+```
+
+Result:
+
+```text
+detected source files:
+  - models/evaluator_wrapper.py
+  - utils/eval_trans.py
+  - options/get_eval_option.py
+
+missing assets:
+  - checkpoints/t2m/text_mot_match/model/finest.tar
+  - checkpoints/t2m/text_mot_match/opt.txt
+  - glove/our_vab_data.npy
+  - glove/our_vab_words.pkl
+
+paper_metrics_ready = false
+```
+
+Important remaining gap:
+
+```text
+Even after the evaluator assets are available, generated MoConVQ BVH/character
+motion still needs a conversion path back to HumanML3D 263-d motion features
+before FID/R-precision are directly comparable to the MoConVQ paper.
+```
