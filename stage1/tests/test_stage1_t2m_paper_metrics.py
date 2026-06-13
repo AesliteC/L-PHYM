@@ -25,6 +25,25 @@ class Stage1T2MPaperMetricsTests(unittest.TestCase):
         self.assertIn("person/OTHER", prompts["jump"].tokens)
         self.assertIn("jumps/OTHER", prompts["jump"].tokens)
 
+    def test_prompt_tsv_accepts_explicit_segments_and_lengths(self):
+        from Script.stage1.evaluate_t2m_paper_metrics import read_prompt_specs
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "prompts.tsv"
+            path.write_text(
+                "walk_turn\twalk then turn\t"
+                + json.dumps(["walk", "turn then step"], ensure_ascii=False)
+                + "\t"
+                + json.dumps([20, 30], ensure_ascii=False)
+                + "\n",
+                encoding="utf-8",
+            )
+            prompts = read_prompt_specs(path)
+
+        self.assertEqual(prompts["walk_turn"].text, "walk then turn")
+        self.assertIn("walk/OTHER", prompts["walk_turn"].tokens)
+        self.assertIn("turn/OTHER", prompts["walk_turn"].tokens)
+
     def test_generated_bvh_name_parser_splits_prompt_and_model(self):
         from Script.stage1.evaluate_t2m_paper_metrics import parse_generated_bvh_name
 

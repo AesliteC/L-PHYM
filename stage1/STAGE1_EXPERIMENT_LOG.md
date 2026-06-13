@@ -8217,6 +8217,11 @@ Script/stage1/run_text_gpt_comparison.py
 Script/stage1/run_stage1_model_suite.py
   prompts.tsv may now contain:
   name<TAB>long_text<TAB>["segment 1", "segment 2", ...]
+  name<TAB>long_text<TAB>["segment 1", "segment 2", ...]<TAB>[len1, len2, ...]
+
+Script/stage1/evaluate_t2m_paper_metrics.py
+  prompt parser accepts the same 2/3/4-column TSV protocol; evaluator text
+  features still use the second-column full long text.
 ```
 
 Behavior:
@@ -8224,6 +8229,8 @@ Behavior:
 - Existing two-column prompt TSV files are unchanged.
 - If the third column is present, the runner forwards `--segments-json` to
   `generate_long_motion.py`.
+- If the fourth column is present, the runner forwards per-prompt
+  `--segment-lengths`.
 - `generation_mode=auto` uses explicit segments to decide segmented vs rolling
   generation, and the T5 encoder sees the natural segment captions only, not a
   synthetic separator token.
@@ -8368,3 +8375,127 @@ For the final report, present both:
 2. explicit clip-boundary Val8 as a stricter consistency diagnostic that shows
    the finetuned model improves duration/coverage but not approximate
    FID/matching yet.
+
+## 2026-06-14: Explicit segment lengths and evaluator TSV compatibility
+
+After the explicit-boundary diagnostic, one more mismatch remained: inference
+used the correct clip captions but still divided `--max-length` almost evenly
+across segments.  The training cache records true latent `segment_ranges`, so a
+more faithful protocol should pass a per-segment length budget derived from
+those ranges.
+
+### Code change
+
+Added fourth-column prompt TSV support:
+
+```text
+name<TAB>long_text<TAB>["segment 1", "segment 2"]<TAB>[len1, len2]
+```
+
+`run_text_gpt_comparison.py` and `run_stage1_model_suite.py` forward the fourth
+column to `generate_long_motion.py --segment-lengths`.  The T2M evaluator
+prompt reader now accepts the same 2/3/4-column file, while still using the
+full second-column long text for R-precision/matching.
+
+Unit check:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/evaluate_t2m_paper_metrics.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_t2m_paper_metrics \
+  -v
+```
+
+Result:
+
+```text
+6 tests passed
+```
+
+Post-update regression:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/generate_long_motion.py \
+  Script/stage1/run_text_gpt_comparison.py \
+  Script/stage1/run_stage1_model_suite.py \
+  Script/stage1/evaluate_t2m_paper_metrics.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_real_generate \
+  tests.test_stage1_text_gpt_comparison \
+  tests.test_stage1_model_suite \
+  tests.test_stage1_evaluation_readiness \
+  tests.test_stage1_t2m_paper_metrics \
+  -v
+```
+
+Result:
+
+```text
+32 tests passed
+```
+
+### Scaled75 Val8 prompt file
+
+Generated from
+`/tmp/stage1_segment_aligned_bvh_native_200_20260614/val_cache.pt` by reading
+the true latent `segment_ranges` and scaling each prompt to a total budget of
+75 tokens:
+
+```text
+/tmp/stage1_segment_aligned_val8_explicit_segments_scaled75_prompts.tsv
+```
+
+Examples:
+
+```text
+train_000001 raw [22, 32, 23] -> scaled [22, 31, 22]
+train_000005 raw [31, 20, 31] -> scaled [29, 18, 28]
+train_000018 raw [50, 20, 35] -> scaled [36, 14, 25]
+train_000039 raw [50, 49, 44, 24] -> scaled [22, 22, 20, 11]
+train_000077 raw [34, 39, 19] -> scaled [28, 32, 15]
+```
+
+### Epoch 3 explicit-boundary scaled75 result
+
+Artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch3_val8_explicit_scaled75_compare_20260614
+/tmp/stage1_t2m_paper_metrics_segment_aligned_head_epoch3_val8_explicit_scaled75_20260614/summary.json
+```
+
+Engineering metrics:
+
+| Metric | Baseline | Finetuned epoch3 |
+| --- | ---: | ---: |
+| avg frames | 1182 | 1194 |
+| early-stop rate | 0.50 | 0.625 |
+| root path | 1.6818 | 1.7485 |
+| root displacement | 0.5340 | 0.5614 |
+| pose velocity mean | 16.1040 | 16.8802 |
+| pose variance mean | 181.5603 | 180.2313 |
+| lag20 repeat fraction | 0.0020 | 0.0020 |
+
+Approximate T2M evaluator metrics:
+
+| Metric | Baseline | Finetuned epoch3 |
+| --- | ---: | ---: |
+| FID lower is better | 20.2790 | 20.2900 |
+| R-precision@1 higher is better | 0.375 | 0.500 |
+| R-precision@2 higher is better | 0.500 | 0.625 |
+| R-precision@3 higher is better | 0.625 | 0.750 |
+| matching score lower is better | 4.8132 | 4.6263 |
+
+Interpretation:
+
+- This is the most training/inference-consistent Val8 protocol so far: explicit
+  HumanML3D clip captions plus segment-length budgets derived from training
+  cache segment ranges.
+- Finetuned improves all three R-precision cutoffs and matching score.
+- FID is effectively tied but slightly worse, and early-stop rate is worse.
+- Therefore the result is a real semantic-retrieval improvement under a stricter
+  protocol, but still not a complete paper-metric win.

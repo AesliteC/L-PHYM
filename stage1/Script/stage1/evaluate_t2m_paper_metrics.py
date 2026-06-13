@@ -74,6 +74,17 @@ def _normalize_token(token: str) -> str:
     return token if "/" in token else f"{token}/OTHER"
 
 
+def _parse_json_list_literal(raw: str) -> list[object] | None:
+    raw = raw.strip()
+    if not raw.startswith("["):
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, list) else None
+
+
 def read_prompt_specs(path: Path) -> dict[str, PromptSpec]:
     specs: dict[str, PromptSpec] = {}
     for line_no, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -81,13 +92,27 @@ def read_prompt_specs(path: Path) -> dict[str, PromptSpec]:
         if not stripped or stripped.startswith("#"):
             continue
         parts = stripped.split("\t")
-        if len(parts) not in {2, 3}:
-            raise ValueError(f"expected TSV with name, text, optional tokens at {path}:{line_no}")
+        if len(parts) not in {2, 3, 4}:
+            raise ValueError(
+                f"expected TSV with name, text, optional tokens or explicit segment metadata at {path}:{line_no}"
+            )
         name = parts[0].strip()
         text = parts[1].strip()
         if not name or not text:
             raise ValueError(f"empty prompt name/text at {path}:{line_no}")
-        if len(parts) == 3 and parts[2].strip():
+
+        raw_third = parts[2].strip() if len(parts) >= 3 else ""
+        raw_fourth = parts[3].strip() if len(parts) >= 4 else ""
+        third_json = _parse_json_list_literal(raw_third) if raw_third else None
+        fourth_json = _parse_json_list_literal(raw_fourth) if raw_fourth else None
+
+        if len(parts) == 4:
+            if raw_third and third_json is None:
+                raise ValueError(f"expected JSON segment list in third TSV column at {path}:{line_no}")
+            if raw_fourth and fourth_json is None:
+                raise ValueError(f"expected JSON segment-length list in fourth TSV column at {path}:{line_no}")
+
+        if raw_third and third_json is None:
             tokens = tuple(_normalize_token(token) for token in parts[2].split())
         else:
             tokens = simple_caption_tokens(text)

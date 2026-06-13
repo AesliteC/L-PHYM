@@ -37,6 +37,8 @@ class Stage1TextGPTComparisonTests(unittest.TestCase):
             path.write_text(
                 "walk_turn\twalk then turn\t"
                 + json.dumps(["walk", "turn"], ensure_ascii=False)
+                + "\t"
+                + json.dumps([3, 4], ensure_ascii=False)
                 + "\n",
                 encoding="utf-8",
             )
@@ -45,6 +47,7 @@ class Stage1TextGPTComparisonTests(unittest.TestCase):
 
             self.assertEqual(prompts, [("walk_turn", "walk then turn")])
             self.assertEqual(prompts[0].segments, ("walk", "turn"))
+            self.assertEqual(prompts[0].segment_lengths, (3, 4))
 
     def test_read_prompts_rejects_non_tsv_line(self):
         from Script.stage1.run_text_gpt_comparison import read_prompts
@@ -67,6 +70,8 @@ class Stage1TextGPTComparisonTests(unittest.TestCase):
             prompts.write_text(
                 "walk_turn\twalk then turn\t"
                 + json.dumps(["walk", "turn"], ensure_ascii=False)
+                + "\t"
+                + json.dumps([3, 4], ensure_ascii=False)
                 + "\n",
                 encoding="utf-8",
             )
@@ -155,11 +160,14 @@ class Stage1TextGPTComparisonTests(unittest.TestCase):
                 self.assertEqual(command[command.index("--segment-joiner") + 1], " THEN ")
                 self.assertIn("--segments-json", command)
                 self.assertEqual(json.loads(command[command.index("--segments-json") + 1]), ["walk", "turn"])
+                self.assertIn("--segment-lengths", command)
+                self.assertEqual(command[command.index("--segment-lengths") + 1], "3,4")
             summary = json.loads((video_dir / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary["sampling"]["progress_context_size"], 51)
             self.assertEqual(summary["sampling"]["progress_prefix_cap"], 25)
             self.assertEqual(summary["sampling"]["segment_joiner"], " THEN ")
             self.assertEqual(summary["prompts"][0]["segments"], ["walk", "turn"])
+            self.assertEqual(summary["prompts"][0]["segment_lengths"], [3, 4])
 
 
 if __name__ == "__main__":

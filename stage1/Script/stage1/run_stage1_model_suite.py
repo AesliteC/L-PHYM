@@ -42,6 +42,7 @@ def generate_gpt_bvh(
     prompt_name: str,
     prompt_text: str,
     prompt_segments: Iterable[str] = (),
+    prompt_segment_lengths: Iterable[int] = (),
     model_name: str,
     checkpoint: str,
     output_bvh: Path,
@@ -102,7 +103,10 @@ def generate_gpt_bvh(
         command.append("--allow-early-stop")
     if args.segment_length is not None:
         command.extend(["--segment-length", str(args.segment_length)])
-    if args.segment_lengths:
+    prompt_segment_lengths = tuple(prompt_segment_lengths)
+    if prompt_segment_lengths:
+        command.extend(["--segment-lengths", ",".join(str(item) for item in prompt_segment_lengths)])
+    elif args.segment_lengths:
         command.extend(["--segment-lengths", args.segment_lengths])
     prompt_segments = tuple(prompt_segments)
     if prompt_segments:
@@ -421,6 +425,7 @@ def main(argv: Iterable[str] | None = None) -> None:
                     prompt_name=prompt_name,
                     prompt_text=prompt_text,
                     prompt_segments=prompt.segments,
+                    prompt_segment_lengths=prompt.segment_lengths,
                     model_name="baseline_top_p",
                     checkpoint=args.baseline_checkpoint,
                     output_bvh=bvh_dir / f"{prompt_name}__baseline_top_p.bvh",
@@ -434,6 +439,7 @@ def main(argv: Iterable[str] | None = None) -> None:
                     prompt_name=prompt_name,
                     prompt_text=prompt_text,
                     prompt_segments=prompt.segments,
+                    prompt_segment_lengths=prompt.segment_lengths,
                     model_name="finetuned_top_p",
                     checkpoint=args.finetuned_checkpoint,
                     output_bvh=bvh_dir / f"{prompt_name}__finetuned_top_p.bvh",

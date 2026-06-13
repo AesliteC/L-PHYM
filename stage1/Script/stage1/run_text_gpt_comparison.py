@@ -15,9 +15,16 @@ from Script.stage1.evaluate_bvh_metrics import evaluate_bvh_files, load_bvh_moti
 
 
 class PromptRecord(tuple):
-    def __new__(cls, name: str, text: str, segments: Iterable[str] | None = None):
+    def __new__(
+        cls,
+        name: str,
+        text: str,
+        segments: Iterable[str] | None = None,
+        segment_lengths: Iterable[int] | None = None,
+    ):
         obj = super().__new__(cls, (name, text))
         obj.segments = tuple(segments or ())
+        obj.segment_lengths = tuple(segment_lengths or ())
         return obj
 
     @property
@@ -42,11 +49,28 @@ def _parse_prompt_segments(raw: str, path: Path, line_no: int) -> tuple[str, ...
     return segments
 
 
+def _parse_prompt_segment_lengths(raw: str, path: Path, line_no: int) -> tuple[int, ...]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid prompt segment-length JSON at {path}:{line_no}: {exc}") from exc
+    if not isinstance(parsed, list):
+        raise ValueError(f"prompt segment-length field must be a JSON list at {path}:{line_no}")
+    lengths = tuple(int(item) for item in parsed)
+    if not lengths or any(length < 1 for length in lengths):
+        raise ValueError(f"prompt segment-length field contains non-positive lengths at {path}:{line_no}")
+    return lengths
+
+
 def format_prompt_tsv_line(prompt: PromptRecord | tuple[str, str]) -> str:
     name, text = prompt
     segments = getattr(prompt, "segments", ())
+    segment_lengths = getattr(prompt, "segment_lengths", ())
     if segments:
-        return f"{name}\t{text}\t{json.dumps(list(segments), ensure_ascii=False)}\n"
+        line = f"{name}\t{text}\t{json.dumps(list(segments), ensure_ascii=False)}"
+        if segment_lengths:
+            line += f"\t{json.dumps(list(segment_lengths), ensure_ascii=False)}"
+        return line + "\n"
     return f"{name}\t{text}\n"
 
 
@@ -56,6 +80,9 @@ def prompt_summary(prompt: PromptRecord | tuple[str, str]) -> dict[str, object]:
     segments = getattr(prompt, "segments", ())
     if segments:
         summary["segments"] = list(segments)
+    segment_lengths = getattr(prompt, "segment_lengths", ())
+    if segment_lengths:
+        summary["segment_lengths"] = list(segment_lengths)
     return summary
 
 
@@ -67,16 +94,25 @@ def read_prompts(path: Path) -> list[PromptRecord]:
             continue
         if "\t" not in stripped:
             raise ValueError(f"expected TSV prompt at {path}:{line_no}")
-        fields = stripped.split("\t", 2)
-        if len(fields) not in {2, 3}:
-            raise ValueError(f"expected 2 or 3 TSV fields at {path}:{line_no}")
+        fields = stripped.split("\t")
+        if len(fields) not in {2, 3, 4}:
+            raise ValueError(f"expected 2, 3, or 4 TSV fields at {path}:{line_no}")
         name, text = fields[0], fields[1]
         name = name.strip()
         text = text.strip()
         if not name or not text:
             raise ValueError(f"empty prompt field at {path}:{line_no}")
         segments = _parse_prompt_segments(fields[2].strip(), path, line_no) if len(fields) == 3 and fields[2].strip() else ()
-        prompts.append(PromptRecord(name, text, segments))
+        if len(fields) == 4:
+            segments = _parse_prompt_segments(fields[2].strip(), path, line_no) if fields[2].strip() else ()
+            segment_lengths = _parse_prompt_segment_lengths(fields[3].strip(), path, line_no) if fields[3].strip() else ()
+            if segment_lengths and not segments:
+                raise ValueError(f"segment lengths require explicit segments at {path}:{line_no}")
+            if segments and segment_lengths and len(segments) != len(segment_lengths):
+                raise ValueError(f"segment count and length count differ at {path}:{line_no}")
+        else:
+            segment_lengths = ()
+        prompts.append(PromptRecord(name, text, segments, segment_lengths))
     if not prompts:
         raise ValueError(f"no prompts found in {path}")
     return prompts
@@ -244,7 +280,9 @@ def main(argv: Iterable[str] | None = None) -> None:
                     command.append("--allow-early-stop")
                 if args.segment_length is not None:
                     command.extend(["--segment-length", str(args.segment_length)])
-                if args.segment_lengths:
+                if prompt.segment_lengths:
+                    command.extend(["--segment-lengths", ",".join(str(item) for item in prompt.segment_lengths)])
+                elif args.segment_lengths:
                     command.extend(["--segment-lengths", args.segment_lengths])
                 if prompt.segments:
                     command.extend(["--segments-json", json.dumps(list(prompt.segments), ensure_ascii=False)])
