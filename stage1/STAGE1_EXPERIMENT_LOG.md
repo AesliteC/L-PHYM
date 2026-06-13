@@ -8499,3 +8499,125 @@ Interpretation:
 - FID is effectively tied but slightly worse, and early-stop rate is worse.
 - Therefore the result is a real semantic-retrieval improvement under a stricter
   protocol, but still not a complete paper-metric win.
+
+## 2026-06-14: Base-head micro fine-tune fixes strict-protocol FID
+
+The head-only model above exposed a likely capacity issue: the data route and
+explicit segment protocol were now consistent, but the model could not improve
+FID under the stricter prompt protocol.  I therefore ran a small `base_head`
+fine-tune on the same segment-aligned native cache, keeping the same progress
+conditioning as inference.
+
+### Training
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/train_real_text_gpt.py \
+  --train-cache /tmp/stage1_segment_aligned_bvh_native_200_20260614/train_cache.pt \
+  --val-cache /tmp/stage1_segment_aligned_bvh_native_200_20260614/val_cache.pt \
+  --init-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --output-dir /tmp/stage1_segment_aligned_bvh_native_200_basehead_seed13_3ep_20260614 \
+  --epochs 3 \
+  --batch-size 8 \
+  --lr 0.000005 \
+  --weight-decay 0.01 \
+  --gpu 0 \
+  --seed 13 \
+  --save-every 1 \
+  --num-workers 2 \
+  --train-scope base_head \
+  --progress-conditioning auto \
+  --progress-scale 0.5 \
+  --context-size 51
+```
+
+Training config:
+
+```text
+train_scope = base_head
+trainable_parameters = 30,577,152
+progress_conditioning = auto
+progress_scale = 0.5
+context_size = 51
+```
+
+Curve:
+
+| Epoch | train loss | val loss | train acc | val acc |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 13.8335 | 14.9117 | 0.0579 | 0.0707 |
+| 1 | 11.7993 | 12.5843 | 0.0573 | 0.0715 |
+| 2 | 9.8848 | 10.7311 | 0.0598 | 0.0719 |
+
+Compared with head-only epoch3 val loss `15.9782`, this shows that the
+segment-aligned native cache is learnable when the model is allowed to adapt
+more than the output head.
+
+### Strict explicit-boundary scaled75 Val8
+
+Generation used the same explicit segment TSV and scaled segment lengths as the
+head-only scaled75 run:
+
+```text
+/tmp/stage1_segment_aligned_val8_explicit_segments_scaled75_prompts.tsv
+```
+
+Artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val8_explicit_scaled75_compare_20260614
+/tmp/stage1_t2m_paper_metrics_segment_aligned_basehead_epoch3_val8_explicit_scaled75_20260614/summary.json
+```
+
+Engineering metrics:
+
+| Metric | Baseline | Base-head epoch3 |
+| --- | ---: | ---: |
+| avg frames | 1182 | 1197 |
+| early-stop rate | 0.50 | 0.50 |
+| root path | 1.6818 | 2.0738 |
+| root displacement | 0.5340 | 0.8632 |
+| pose velocity mean | 16.1040 | 17.7321 |
+| pose variance mean | 181.5603 | 193.8942 |
+| lag20 repeat fraction | 0.0020 | 0.0028 |
+
+Approximate T2M evaluator metrics:
+
+| Metric | Baseline | Base-head epoch3 |
+| --- | ---: | ---: |
+| FID lower is better | 20.2790 | 14.9851 |
+| R-precision@1 higher is better | 0.375 | 0.375 |
+| R-precision@2 higher is better | 0.500 | 0.750 |
+| R-precision@3 higher is better | 0.625 | 0.875 |
+| matching score lower is better | 4.8132 | 4.3839 |
+
+Visual artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val8_explicit_scaled75_compare_20260614/contact_sheet.png
+/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val8_explicit_scaled75_compare_20260614/video/train_000057__baseline_vs_basehead.mp4
+/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val8_explicit_scaled75_compare_20260614/video/train_000077__baseline_vs_basehead.mp4
+```
+
+Contact-sheet audit:
+
+- No blank frames, whole-body inversion, or explosive poses were visible.
+- Base-head generations generally have larger root/path coverage than baseline.
+- `train_000077` preserves the crouch/kneel posture family without obvious
+  collapse; `train_000057` produces a longer walking/pickup sequence than
+  baseline.
+
+Interpretation:
+
+- This is the best strict-protocol Stage1 result so far.
+- It improves approximate FID, R@2, R@3, matching score, average frames, and
+  root path over baseline while tying R@1 and early-stop rate.
+- It does not improve every diagnostic: pose variance and lag20 repeat are
+  slightly higher, so the final claim should still be "partial but meaningful
+  improvement" rather than a fully solved long-horizon generator.
+- The result strongly suggests the main problem after fixing data mapping and
+  prompt segmentation was insufficient fine-tune capacity in the head-only
+  model, not abandonment of HumanML3D synthesis.
