@@ -73,10 +73,11 @@ finetuned 生成在工程指标的平均长度和早停率上超过 baseline；
 | train cache | 278 windows, 55,516 valid RVQ tokens |
 | val cache | 66 windows, 13,200 valid RVQ tokens |
 | train token top fraction | depth0 0.063, depth1 0.022 |
-| training | base_head, 5 epochs, val loss 7.913 -> 6.230 |
-| generation avg frames | baseline 1062, finetuned 1170 |
+| training | head-only, 5 epochs, val loss 8.980 -> 8.443 |
+| generation avg frames | baseline 1062, finetuned 1194 |
 | generation early-stop rate | baseline 0.75, finetuned 0.50 |
-| visual audit | no obvious fall-over/full-body inversion in contact sheet; finetuned is longer but more energetic/less smooth |
+| pose velocity / variance | baseline 14.052 / 141.194, finetuned 19.133 / 190.011 |
+| visual audit | no obvious fall-over/full-body inversion in contact sheet; finetuned is longer with moderate, not extreme, motion-energy increase |
 
 This is the first run where the main HumanML3D reconstruction route gives a
 measurable generation-side improvement over the MoConVQ baseline on the Stage1
@@ -342,7 +343,7 @@ Script/stage1/train_real_text_gpt.py
 - 使用自回归对齐：`condition, reconstructed_latent[0], ..., reconstructed_latent[T-2]` 预测 `indices[0], ..., indices[T-1]`；
 - `reconstructed_latent` 由 cache 中的前 4 层 RVQ `indices` 和 GPT codebook embedding 动态重建，和 `Text2Motion_Transformer.sample()` 推理时的 latent 空间保持一致；
 - 使用 `logits[:, :, :4, :]` 对齐 4 层 RVQ depth；
-- 支持 `--train-scope all/base_head/head`，其中 `base_head` 会冻结文本/时间条件模块，只微调 RVQ base/head，推荐作为下一轮保守实验起点；
+- 支持 `--train-scope all/base_head/head`；早期实验把 `base_head` 作为保守起点，当前 2026-06-13 long-native 结果更推荐 `head`，因为它在长度/早停改善接近或更好时保留了更低的 pose velocity/variance；
 - 支持 `--depth-weights`，可对 4 层 RVQ CE 加权，优先稳定前两层主体动作 token；
 - 支持 `--baseline-kl-weight` 和 `--kl-temperature`，使用冻结的 baseline GPT 做 logits distillation，降低小规模 HumanML3D 微调破坏原始运动先验的风险；
 - 支持 `--end-token-weight`，在 padding 后第一步加入小权重 end-token 辅助 loss，用于控制早停/不结束倾向；

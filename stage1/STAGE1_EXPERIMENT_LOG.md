@@ -6667,3 +6667,110 @@ So the current Stage1 answer is:
 - visual quality is somewhat better than previous failed fine-tunes, but still
   not fully stable because pose velocity/variance increase;
 - FID/R-precision still require missing HumanML3D evaluator assets.
+
+## 2026-06-13 Long-native head-only conservative ablation
+
+### Motivation
+
+The `base_head` long-native run improved length and early-stop rate, but pose
+velocity and pose variance increased strongly:
+
+```text
+pose velocity: 14.052 -> 29.972
+pose variance: 141.194 -> 277.800
+```
+
+To check whether the instability comes from updating too many GPT layers, I ran
+the same cache and generation setup with:
+
+```text
+--train-scope head
+```
+
+This trains only the transformer head parameters:
+
+```text
+trainable_parameters = 7,880,448
+```
+
+### Training
+
+Output directory:
+
+```text
+/tmp/stage1_long_fixed_bvh_native_200_head_seed13_5ep_20260613
+```
+
+Training curve:
+
+| epoch | train loss | train acc | val loss | val acc |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 9.0885 | 0.0414 | 8.9803 | 0.0523 |
+| 1 | 8.8491 | 0.0420 | 8.8365 | 0.0523 |
+| 2 | 8.7996 | 0.0428 | 8.6999 | 0.0534 |
+| 3 | 8.6119 | 0.0436 | 8.5675 | 0.0549 |
+| 4 | 8.4628 | 0.0453 | 8.4427 | 0.0560 |
+
+This trains more weakly than `base_head` but still moves in the expected
+direction.
+
+### Generation comparison
+
+Checkpoint:
+
+```text
+/tmp/stage1_long_fixed_bvh_native_200_head_seed13_5ep_20260613/checkpoint_epoch_5.pth
+```
+
+Suite:
+
+```text
+/tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613
+```
+
+Frames by prompt:
+
+| prompt | baseline frames | fine-tuned frames | baseline early stop | fine-tuned early stop |
+| --- | ---: | ---: | --- | --- |
+| walk_turn_wave | 816 | 864 | true | true |
+| circle_crouch_stand | 1176 | 1656 | true | false |
+| walk_jump_dance | 1392 | 1392 | false | false |
+| sidestep_kick_turn | 864 | 864 | true | true |
+
+Model averages:
+
+| model | avg frames | early stop rate | avg root path | avg root displacement | avg pose velocity | avg pose variance | lag20 repeat >0.995 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline top-p | 1062 | 0.75 | 3.472 | 1.268 | 14.052 | 141.194 | 0.000 |
+| head fine-tuned top-p | 1194 | 0.50 | 4.187 | 1.361 | 19.133 | 190.011 | 0.002 |
+| base_head fine-tuned top-p | 1170 | 0.50 | 3.538 | 1.231 | 29.972 | 277.800 | 0.000 |
+
+Visual/contact-sheet audit:
+
+- no obvious fall-over or full-body inversion was visible in the sampled
+  contact sheet;
+- `circle_crouch_stand` is much longer than baseline and crosses the
+  1200-frame threshold;
+- `walk_jump_dance` and `sidestep_kick_turn` are mostly unchanged in length;
+- compared with `base_head`, the head-only model keeps a better stability
+  tradeoff: similar early-stop improvement, higher average frames, and much
+  smaller pose velocity/variance increase.
+
+Current recommended checkpoint for Stage1 engineering comparison:
+
+```text
+/tmp/stage1_long_fixed_bvh_native_200_head_seed13_5ep_20260613/checkpoint_epoch_5.pth
+```
+
+Current recommended comparison artifacts:
+
+```text
+BVH:
+  /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/bvh/
+
+side-by-side MP4:
+  /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/video/
+
+contact sheet:
+  /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/contact_sheet.png
+```
