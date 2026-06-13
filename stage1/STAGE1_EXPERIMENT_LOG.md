@@ -5646,3 +5646,135 @@ false-rejected walking rows.  Then run a longer conservative
 `base_head`/`temporal_base_head` fine-tune from the train cache, use the val
 cache only for early stopping/checking, and compare generated BVH/MP4 against
 the baseline GPT on multi-stage prompts.
+
+## 2026-06-13: Batch500 MP4 audit for accepted risk and rejected false-positive candidates
+
+### Purpose
+
+The batch500 contact sheets were useful but only sparse static frames.  Before
+using the accepted train/val cache for a report-facing fine-tune, this check
+renders a small MP4 audit set:
+
+- accepted rows that looked risky in the contact sheet;
+- rejected walking/turning rows that looked plausible statically and may be
+  false rejects caused by conservative z-score thresholds.
+
+### Selected samples
+
+Accepted risk candidates:
+
+| label | reason for audit |
+| --- | --- |
+| `000808` | high p99 among accepted rows, exercise motion |
+| `003355` | repeated high-kick motion near depth0 collapse threshold |
+| `013481` | walk/drop-to-ground/breast-stroke caption; contact sheet showed floor motion |
+
+Rejected possible false-positive candidates:
+
+| label | reject reasons | reason for audit |
+| --- | --- | --- |
+| `010684` | `p99_abs_z>8`, `max_abs_z>50` | walking/turning caption looked plausible statically |
+| `013114` | `p99_abs_z>8` | simple walking-forward caption |
+| `M012928` | `p99_abs_z>8` | multi-turn walking caption looked plausible statically |
+
+### Render command
+
+The audit input directory contains symlinks to the selected BVH files:
+
+```text
+stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/mp4_audit_input/
+```
+
+Render command:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/render_bvh_to_mp4.py \
+  --input stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/mp4_audit_input \
+  --output-dir stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/mp4_audit_videos \
+  --ffmpeg /home/chenjie/miniconda3/envs/moconvq/bin/ffmpeg \
+  --fps 30 \
+  --width 960 \
+  --height 720 \
+  --max-video-frames 240
+```
+
+Result:
+
+```text
+videos = 6
+elapsed_sec = 44.66
+```
+
+Generated MP4s:
+
+```text
+accepted_000808_exercise.mp4        152 frames, 5.07 s
+accepted_003355_high_kick.mp4       199 frames, 6.63 s
+accepted_013481_ground.mp4          199 frames, 6.63 s
+rejected_010684_walk_turn.mp4       194 frames, 6.47 s
+rejected_013114_walk_forward.mp4    199 frames, 6.63 s
+rejected_M012928_walk_turn.mp4      199 frames, 6.63 s
+```
+
+Screenshot sanity checks were extracted at 2 s and 5 s:
+
+```text
+stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/mp4_audit_screenshots/
+stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/mp4_audit_screenshots/contact_sheet_t2_t5.png
+```
+
+All screenshot files were non-empty and had non-degenerate RGB statistics, so
+the MP4s are not blank.
+
+### Engineering metrics
+
+All six audit BVHs have at least 120 frames and are not early-stop cases under
+the current engineering metric.
+
+| audit label | accepted | frames | p99 z | max z | depth0 top frac | depth0 unique | root path | root disp | pose vel |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `accepted_000808_exercise` | yes | 152 | 7.628 | 18.511 | 0.158 | 22 | 2.296 | 0.424 | 184.551 |
+| `accepted_003355_high_kick` | yes | 199 | 6.229 | 24.335 | 0.224 | 20 | 1.176 | 0.052 | 125.139 |
+| `accepted_013481_ground` | yes | 199 | 6.555 | 27.278 | 0.245 | 21 | 2.826 | 2.471 | 131.572 |
+| `rejected_010684_walk_turn` | no | 194 | 15.993 | 57.024 | 0.146 | 19 | 6.940 | 2.055 | 189.182 |
+| `rejected_013114_walk_forward` | no | 199 | 15.851 | 29.700 | 0.122 | 28 | 4.312 | 0.151 | 156.951 |
+| `rejected_M012928_walk_turn` | no | 199 | 16.701 | 34.523 | 0.204 | 22 | 6.705 | 0.787 | 152.721 |
+
+### Visual observations from MP4 screenshots
+
+- `accepted_000808_exercise`: upright and readable in the inspected frames, but
+  with a leaning/exercise posture.  It looks usable as a challenging accepted
+  sample.
+- `accepted_003355_high_kick`: upright and readable, but it has extreme leg
+  poses.  It may be useful if high-kick motions are desired, but it should not
+  dominate a small training set.
+- `accepted_013481_ground`: clear floor/prone motion appears by the 5 s
+  screenshot.  The filter accepted it because z-score and depth0 thresholds
+  passed, but it is a risky sample for the current MoConVQ character bridge and
+  should be excluded or separately bucketed for the first conservative
+  fine-tune.
+- `rejected_010684_walk_turn`: visually plausible walking/turning in the
+  inspected frames despite high z-score rejection.  This is a likely
+  conservative false reject.
+- `rejected_013114_walk_forward`: the inspected frames are upright but show
+  bending/leaning; rejection may be reasonable until full video is inspected.
+- `rejected_M012928_walk_turn`: visually plausible walking/turning in the
+  inspected frames despite high z-score rejection.  This is another likely
+  conservative false reject.
+
+### Interpretation
+
+The current quality filter is useful but too blunt for final data selection:
+
+- It catches many difficult floor/crouch/high-bend cases, but accepted rows can
+  still contain floor motions such as `013481`.
+- Some z-score-only rejected rows look like plausible walking motions in MP4
+  screenshots.  A stricter "first fine-tune" subset should exclude accepted
+  floor/prone captions, while a later recall-improving pass should review
+  z-score-only rejected walking rows before throwing them away.
+
+For the first conservative train run, use the existing batch500 train/val cache
+as a path baseline, but consider a filtered-v2 cache that removes floor/prone
+accepted rows and possibly restores visually plausible z-score-only walking
+rows after full MP4 inspection.
