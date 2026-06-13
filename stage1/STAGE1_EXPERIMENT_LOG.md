@@ -5452,3 +5452,197 @@ create accepted-only train/val split from batch500 or a larger batch
 -> run baseline-vs-finetuned Stage1 model suite on multi-stage prompts
 -> record BVH engineering metrics, videos, semantic checklist, and failure modes
 ```
+
+## 2026-06-13: Batch500 accepted train/val split cache
+
+### Purpose
+
+The previous batch500 cache used all 90 accepted rows as both train and val for
+a path check.  This follow-up creates a deterministic accepted-only train/val
+split so later MoConGPT fine-tuning has a held-out cache, even if the validation
+set is still small.
+
+### Code change
+
+Added:
+
+```text
+Script/stage1/split_bvh_quality_summary.py
+tests/test_stage1_bvh_quality_split.py
+```
+
+The splitter reads a `summarize_bvh_retarget_quality.py` JSON, keeps accepted
+rows by default, shuffles with a fixed seed, and writes two quality-summary JSON
+files.  The existing `build_bvh_character_gpt_cache.py --quality-summary` path
+can then build train and val caches without inventing a new cache format.
+
+### Split command
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/split_bvh_quality_summary.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_summary.json \
+  --train-output stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_train_seed13.json \
+  --val-output stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_val_seed13.json \
+  --seed 13 \
+  --val-fraction 0.2 \
+  --quiet
+```
+
+Result:
+
+```text
+train accepted rows = 72
+val accepted rows = 18
+```
+
+### Train/val cache build
+
+Train cache:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_train_seed13.json \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 50 \
+  --window-stride 25 \
+  --rvq-depth 4 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_train_seed13.pt \
+  --observation-h5 stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/observations_train_seed13.h5 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_train_seed13_summary.json \
+  --quiet
+```
+
+The first sandboxed attempt failed with the known MPI/socket error; the same
+command succeeded after rerunning outside the sandbox:
+
+```text
+windows = 72
+valid_tokens = 12552
+unique_sequences = 72
+elapsed_sec = 27.52
+```
+
+Val cache:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_val_seed13.json \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 50 \
+  --window-stride 25 \
+  --rvq-depth 4 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_val_seed13.pt \
+  --observation-h5 stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/observations_val_seed13.h5 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_val_seed13_summary.json \
+  --quiet
+```
+
+Result:
+
+```text
+windows = 18
+valid_tokens = 3252
+unique_sequences = 18
+elapsed_sec = 13.91
+```
+
+### Token distribution
+
+Train split:
+
+| depth | tokens | unique | top frac |
+| --- | ---: | ---: | ---: |
+| 0 | 3138 | 383 | 0.042384 |
+| 1 | 3138 | 484 | 0.010835 |
+| 2 | 3138 | 491 | 0.046208 |
+| 3 | 3138 | 476 | 0.074570 |
+
+Val split:
+
+| depth | tokens | unique | top frac |
+| --- | ---: | ---: | ---: |
+| 0 | 813 | 240 | 0.029520 |
+| 1 | 813 | 342 | 0.020910 |
+| 2 | 813 | 355 | 0.027060 |
+| 3 | 813 | 310 | 0.086101 |
+
+The split does not show obvious token collapse.  The val set is small, so its
+distribution should be treated as a smoke/early-warning signal rather than a
+stable model-selection benchmark.
+
+### Train/val training path check
+
+Command:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/train_real_text_gpt.py \
+  --train-cache stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_train_seed13.pt \
+  --val-cache stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_val_seed13.pt \
+  --init-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --output-dir /tmp/stage1_batch500_trainval_head_seed13_20260613 \
+  --epochs 1 \
+  --batch-size 8 \
+  --lr 1e-5 \
+  --train-scope head \
+  --num-workers 0 \
+  --gpu 0 \
+  --seed 13
+```
+
+Result:
+
+```text
+GPU not detected. Defaulting to CPU.
+train_scope=head trainable_parameters=7880448
+epoch=0 train=16.8986/acc=0.0612 val=17.5875/acc=0.0409 elapsed=65.8s
+elapsed_sec = 74.20
+```
+
+Detailed log:
+
+```text
+train valid_tokens = 12552
+train depth_accuracy = [0.1906, 0.0271, 0.0112, 0.0159]
+val valid_tokens = 3252
+val depth_accuracy = [0.1193, 0.0332, 0.0074, 0.0037]
+```
+
+This confirms the split train/val caches are consumable by the real MoConGPT
+training path.  It is not yet evidence of model improvement, because only the
+head was trained for one epoch on a small accepted set.
+
+### Verification
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/split_bvh_quality_summary.py \
+  tests/test_stage1_bvh_quality_split.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_bvh_quality_split \
+  -v
+```
+
+Results:
+
+```text
+py_compile passed
+tests.test_stage1_bvh_quality_split: 3 tests passed
+```
+
+### Next action
+
+Before a report-level fine-tune, inspect MP4s for accepted risky rows and likely
+false-rejected walking rows.  Then run a longer conservative
+`base_head`/`temporal_base_head` fine-tune from the train cache, use the val
+cache only for early stopping/checking, and compare generated BVH/MP4 against
+the baseline GPT on multi-stage prompts.
