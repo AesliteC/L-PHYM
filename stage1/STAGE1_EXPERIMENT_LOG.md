@@ -8830,3 +8830,155 @@ early-stop tie.  This is enough for a cautious "better than baseline on key
 metrics" claim, but not enough to claim the long-horizon text-to-motion problem
 is solved.
 ```
+
+## 2026-06-14: Val18 checkpoint and decoding sweep
+
+### Purpose
+
+After the reproducible Val18 epoch3 run, I swept nearby checkpoints and one
+more conservative decoding setting to answer two questions:
+
+1. Whether `checkpoint_epoch_3.pth` is genuinely the best Stage1 checkpoint or
+   just the strongest Val8 sample.
+2. Whether lowering sampling entropy (`top_p=0.90`, `temperature=0.8`) improves
+   semantic retrieval metrics without hurting motion quality.
+
+All runs used the same strict-prompt protocol:
+
+```text
+4-column TSV exported from val cache
+  -> explicit HumanML3D clip-caption JSON
+  -> scaled segment lengths, total generation budget = 75 tokens
+  -> baseline progress_conditioning=none
+  -> finetuned progress_conditioning=auto, progress_scale=0.5
+```
+
+This keeps training and inference aligned at the original HumanML3D clip
+boundary instead of relying on naive `" then "` splitting.
+
+### Val18 approximate paper metrics
+
+| Setting | Model | FID lower is better | R@1 | R@2 | R@3 | Matching lower is better |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| epoch1, top_p=0.95, temp=1.0 | baseline | 13.7255 | 0.2222 | 0.4444 | 0.4444 | 4.8802 |
+| epoch1, top_p=0.95, temp=1.0 | finetuned | 14.1481 | 0.2222 | 0.3889 | 0.5000 | 4.6518 |
+| epoch2, top_p=0.95, temp=1.0 | baseline | 13.7255 | 0.2222 | 0.4444 | 0.4444 | 4.8802 |
+| epoch2, top_p=0.95, temp=1.0 | finetuned | 13.0602 | 0.2222 | 0.4444 | 0.5000 | 4.7885 |
+| epoch3, top_p=0.95, temp=1.0 | baseline | 13.7255 | 0.2222 | 0.4444 | 0.4444 | 4.8802 |
+| epoch3, top_p=0.95, temp=1.0 | finetuned | 12.6332 | 0.2778 | 0.2778 | 0.4444 | 4.6093 |
+| epoch2, top_p=0.90, temp=0.8 | baseline | 13.2935 | 0.3333 | 0.4444 | 0.5556 | 4.8050 |
+| epoch2, top_p=0.90, temp=0.8 | finetuned | 14.3544 | 0.2778 | 0.3889 | 0.5000 | 4.8366 |
+
+Interpretation:
+
+- Epoch3 is best for FID, R@1 and matching score on Val18, but it gives up
+  R@2.  This matches the earlier Val8 result that it is a strong positive
+  checkpoint but not uniformly better on every retrieval cutoff.
+- Epoch2 is the more conservative Val18 checkpoint: it improves FID, R@3 and
+  matching score while tying baseline on R@1/R@2.  This is the safer checkpoint
+  to cite when the goal is "no R-precision regression on the full 18-sequence
+  validation suite."
+- Epoch1 is not selected: it improves matching/R@3 but worsens FID and R@2.
+- Conservative decoding (`top_p=0.90`, `temperature=0.8`) is a negative result.
+  It makes the baseline stronger and the finetuned model worse on all approximate
+  T2M metrics, so it should not be used for the main Stage1 claim.
+
+### Val18 epoch2 engineering metrics
+
+Artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch2_val18_explicit_scaled75_compare_20260614
+/tmp/stage1_t2m_paper_metrics_segment_aligned_basehead_epoch2_val18_explicit_scaled75_20260614/summary.json
+/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch2_val18_explicit_scaled75_compare_20260614/contact_sheet.png
+```
+
+Engineering summary:
+
+| Metric | Baseline | Base-head epoch2 |
+| --- | ---: | ---: |
+| samples | 18 | 18 |
+| avg frames | 1292 | 1304 |
+| early-stop rate | 0.2778 | 0.3333 |
+| root path | 2.6053 | 2.7284 |
+| root displacement | 0.8678 | 0.9158 |
+| pose velocity mean | 27.3341 | 27.6977 |
+| pose variance mean | 339.6971 | 328.4767 |
+| lag20 repeat fraction | 0.0075 | 0.0063 |
+
+Manual contact-sheet inspection:
+
+- No blank frames, whole-body inversion, or explosive poses were visible.
+- Several crouch/crawl/low-posture samples stay in the low-pose family instead
+  of immediately collapsing.
+- Finetuned generally keeps sequence duration/root coverage competitive with
+  baseline.
+- Some rows still show awkward bending and semantic detail failures.  This is a
+  stable engineering result, not a visually polished final text-to-motion model.
+
+### Conservative decoding engineering metrics
+
+Artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch2_val18_explicit_scaled75_topp90_temp08_compare_20260614
+/tmp/stage1_t2m_paper_metrics_segment_aligned_basehead_epoch2_val18_explicit_scaled75_topp90_temp08_20260614/summary.json
+```
+
+Engineering summary:
+
+| Metric | Baseline top_p=0.90/temp=0.8 | Finetuned top_p=0.90/temp=0.8 |
+| --- | ---: | ---: |
+| samples | 18 | 18 |
+| avg frames | 1289.3333 | 1302.6667 |
+| early-stop rate | 0.3333 | 0.3333 |
+| root path | 2.5852 | 2.4410 |
+| root displacement | 0.8842 | 0.6917 |
+| pose velocity mean | 26.6988 | 26.1444 |
+| pose variance mean | 321.1025 | 349.5322 |
+| lag20 repeat fraction | 0.0078 | 0.0112 |
+
+Interpretation:
+
+- The finetuned model is still slightly longer, but root path/displacement and
+  repeat diagnostics are worse than baseline.
+- Combined with the approximate T2M regression, this decoding setting is not
+  part of the final recommended protocol.
+
+### Code support for sweeps
+
+`Script/stage1/run_stage1_model_suite.py` now has:
+
+```text
+--reuse-existing-bvh
+```
+
+This skips generation per prompt/model when the target BVH already exists while
+still recording the command, frame count and `reused_existing=true` in
+`suite_summary.json`.  It was added to make checkpoint sweeps faster and safer:
+for example, epoch1/2/3 comparisons can reuse identical baseline BVHs when the
+baseline checkpoint and decoding settings are unchanged.  A regression test
+checks that the suite reuses only the existing model file and still generates
+the missing counterpart.
+
+### Current selected result
+
+For the report:
+
+```text
+Primary strict Val8 / video example:
+  base_head checkpoint_epoch_3, top_p=0.95, temp=1.0
+
+More conservative full Val18 metric checkpoint:
+  base_head checkpoint_epoch_2, top_p=0.95, temp=1.0
+
+Negative result:
+  checkpoint_epoch_2 with top_p=0.90, temp=0.8
+```
+
+The Stage1 claim should remain cautious: the HumanML3D synthesis and
+BVH-to-character native retarget route are now the working path, and the
+fine-tuned GPT beats baseline on several approximate paper-style metrics and
+video stability checks.  It still does not dominate every R-precision cutoff,
+and the evaluator route is approximate because MoConVQ BVHs are adapted to
+HumanML3D 22-joint / 263-d features and then truncated by the T2M evaluator.

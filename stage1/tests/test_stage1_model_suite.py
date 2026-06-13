@@ -5,6 +5,26 @@ from pathlib import Path
 
 
 class Stage1ModelSuiteTests(unittest.TestCase):
+    @staticmethod
+    def _tiny_bvh_text(frames: int = 3) -> str:
+        rows = "\n".join(f"{idx} 0 0 {idx} 0 0" for idx in range(frames))
+        return (
+            "HIERARCHY\n"
+            "ROOT Hips\n"
+            "{\n"
+            "  OFFSET 0 0 0\n"
+            "  CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation\n"
+            "  End Site\n"
+            "  {\n"
+            "    OFFSET 0 1 0\n"
+            "  }\n"
+            "}\n"
+            "MOTION\n"
+            f"Frames: {frames}\n"
+            "Frame Time: 0.008333\n"
+            f"{rows}\n"
+        )
+
     def test_default_prompt_writer_and_llm_response_map(self):
         from Script.stage1.run_stage1_model_suite import (
             DEFAULT_PROMPTS,
@@ -39,25 +59,7 @@ class Stage1ModelSuiteTests(unittest.TestCase):
             bvh_dir = tmp / "bvh"
             bvh_dir.mkdir()
             for model in ("baseline_top_p", "finetuned_top_p"):
-                (bvh_dir / f"walk_turn__{model}.bvh").write_text(
-                    "HIERARCHY\n"
-                    "ROOT Hips\n"
-                    "{\n"
-                    "  OFFSET 0 0 0\n"
-                    "  CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation\n"
-                    "  End Site\n"
-                    "  {\n"
-                    "    OFFSET 0 1 0\n"
-                    "  }\n"
-                    "}\n"
-                    "MOTION\n"
-                    "Frames: 3\n"
-                    "Frame Time: 0.008333\n"
-                    "0 0 0 0 0 0\n"
-                    "1 0 0 1 0 0\n"
-                    "2 0 0 2 0 0\n",
-                    encoding="utf-8",
-                )
+                (bvh_dir / f"walk_turn__{model}.bvh").write_text(self._tiny_bvh_text(), encoding="utf-8")
 
             suite.main(
                 [
@@ -88,6 +90,56 @@ class Stage1ModelSuiteTests(unittest.TestCase):
         self.assertIn("baseline_top_p", summary["model_averages"])
         self.assertEqual(len(metrics["rows"]), 2)
 
+    def test_model_suite_reuses_existing_bvh_per_model(self):
+        import Script.stage1.run_stage1_model_suite as suite
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            prompts = tmp / "prompts.tsv"
+            prompts.write_text("walk_turn\twalk then turn\n", encoding="utf-8")
+            bvh_dir = tmp / "bvh"
+            bvh_dir.mkdir()
+            (bvh_dir / "walk_turn__baseline_top_p.bvh").write_text(self._tiny_bvh_text(), encoding="utf-8")
+            commands = []
+
+            def fake_run_command(command, log_path=None):
+                commands.append(command)
+                output = Path(command[command.index("--output-bvh") + 1])
+                output.write_text(self._tiny_bvh_text(), encoding="utf-8")
+                if log_path is not None:
+                    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(log_path).write_text("ok\n", encoding="utf-8")
+
+            old_run_command = suite.run_command
+            suite.run_command = fake_run_command
+            try:
+                suite.main(
+                    [
+                        "--run-id",
+                        "unit_reuse",
+                        "--prompts",
+                        str(prompts),
+                        "--finetuned-checkpoint",
+                        "finetuned.pth",
+                        "--suite-dir",
+                        str(tmp / "suite"),
+                        "--bvh-dir",
+                        str(bvh_dir),
+                        "--reuse-existing-bvh",
+                        "--skip-backup",
+                    ]
+                )
+            finally:
+                suite.run_command = old_run_command
+
+            summary = json.loads((tmp / "suite" / "suite_summary.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(len(commands), 1)
+        self.assertIn("finetuned.pth", commands[0])
+        self.assertTrue(summary["generated"][0]["reused_existing"])
+        self.assertFalse(summary["generated"][1]["reused_existing"])
+        self.assertEqual(len(summary["generated"]), 2)
+
     def test_model_suite_wires_retrieval_backup_commands(self):
         import Script.stage1.run_stage1_model_suite as suite
 
@@ -112,24 +164,7 @@ class Stage1ModelSuiteTests(unittest.TestCase):
             motion_dataset.write_text("placeholder", encoding="utf-8")
             bvh_dir = tmp / "bvh"
             bvh_dir.mkdir()
-            (bvh_dir / "walk_turn__backup_retrieval.bvh").write_text(
-                "HIERARCHY\n"
-                "ROOT Hips\n"
-                "{\n"
-                "  OFFSET 0 0 0\n"
-                "  CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation\n"
-                "  End Site\n"
-                "  {\n"
-                "    OFFSET 0 1 0\n"
-                "  }\n"
-                "}\n"
-                "MOTION\n"
-                "Frames: 2\n"
-                "Frame Time: 0.008333\n"
-                "0 0 0 0 0 0\n"
-                "1 0 0 1 0 0\n",
-                encoding="utf-8",
-            )
+            (bvh_dir / "walk_turn__backup_retrieval.bvh").write_text(self._tiny_bvh_text(frames=2), encoding="utf-8")
             commands = []
 
             def fake_run_command(command, log_path=None):
@@ -226,24 +261,7 @@ class Stage1ModelSuiteTests(unittest.TestCase):
             mapping.write_text(json.dumps({"walk_turn": str(response)}), encoding="utf-8")
             bvh_dir = tmp / "bvh"
             bvh_dir.mkdir()
-            (bvh_dir / "walk_turn__backup_llm.bvh").write_text(
-                "HIERARCHY\n"
-                "ROOT Hips\n"
-                "{\n"
-                "  OFFSET 0 0 0\n"
-                "  CHANNELS 6 Xposition Yposition Zposition Zrotation Xrotation Yrotation\n"
-                "  End Site\n"
-                "  {\n"
-                "    OFFSET 0 1 0\n"
-                "  }\n"
-                "}\n"
-                "MOTION\n"
-                "Frames: 2\n"
-                "Frame Time: 0.008333\n"
-                "0 0 0 0 0 0\n"
-                "1 0 0 1 0 0\n",
-                encoding="utf-8",
-            )
+            (bvh_dir / "walk_turn__backup_llm.bvh").write_text(self._tiny_bvh_text(frames=2), encoding="utf-8")
             commands = []
 
             def fake_run_command(command, log_path=None):

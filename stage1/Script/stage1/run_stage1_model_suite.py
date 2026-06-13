@@ -111,7 +111,8 @@ def generate_gpt_bvh(
     prompt_segments = tuple(prompt_segments)
     if prompt_segments:
         command.extend(["--segments-json", json.dumps(list(prompt_segments), ensure_ascii=False)])
-    if not args.skip_generation:
+    reused_existing = bool(args.reuse_existing_bvh and output_bvh.exists())
+    if not args.skip_generation and not reused_existing:
         run_command(command, log_path=log_path)
     return {
         "prompt": prompt_name,
@@ -119,6 +120,7 @@ def generate_gpt_bvh(
         "path": str(output_bvh),
         "log": str(log_path),
         "command": _command_to_string(command),
+        "reused_existing": reused_existing,
         "frames": count_bvh_frames(output_bvh) if output_bvh.exists() else None,
     }
 
@@ -386,6 +388,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--suite-dir", default="")
     parser.add_argument("--bvh-dir", default="")
     parser.add_argument("--skip-generation", action="store_true")
+    parser.add_argument("--reuse-existing-bvh", action="store_true")
     parser.add_argument("--skip-gpt", action="store_true")
     parser.add_argument("--skip-backup", action="store_true")
     parser.add_argument("--backup-cache", default="")
@@ -516,6 +519,7 @@ def main(argv: Iterable[str] | None = None) -> None:
             "progress_prefix_cap": args.progress_prefix_cap,
             "seed": args.seed,
             "expected_min_frames": args.expected_min_frames,
+            "reuse_existing_bvh": args.reuse_existing_bvh,
             "backup_trim_repeat_runs": args.backup_trim_repeat_runs,
             "backup_max_consecutive_repeat": args.backup_max_consecutive_repeat,
         },
