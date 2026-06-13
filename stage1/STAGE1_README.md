@@ -84,6 +84,29 @@ measurable generation-side improvement over the MoConVQ baseline on the Stage1
 engineering metrics.  It is still not a paper-level claim because FID and
 R-precision are unavailable without the pretrained HumanML3D evaluator.
 
+The current best run can be summarized reproducibly with:
+
+```bash
+cd /home/chenjie/cc/robotics/MoConVQ
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/summarize_stage1_run.py \
+  --run-name long_fixed_native200_head_epoch5_20260613 \
+  --quality-summary /tmp/stage1_long_fixed_bvh_native_200_20260613/quality_summary.json \
+  --train-cache-summary /tmp/stage1_long_fixed_bvh_native_200_20260613/train_cache_summary.json \
+  --val-cache-summary /tmp/stage1_long_fixed_bvh_native_200_20260613/val_cache_summary.json \
+  --train-token-distribution /tmp/stage1_long_fixed_bvh_native_200_20260613/train_token_distribution.json \
+  --val-token-distribution /tmp/stage1_long_fixed_bvh_native_200_20260613/val_token_distribution.json \
+  --train-log /tmp/stage1_long_fixed_bvh_native_200_head_seed13_5ep_20260613/train_log.jsonl \
+  --metrics-json /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/summary_metrics.json \
+  --comparison-video-summary /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/video/summary.json \
+  --evaluation-readiness /tmp/stage1_eval_readiness_long_native_200_20260613.json \
+  --checkpoint /tmp/stage1_long_fixed_bvh_native_200_head_seed13_5ep_20260613/checkpoint_epoch_5.pth \
+  --notes "Current best Stage1 engineering run: long HumanML3D -> BVH -> MoConVQ native retarget, head-only conservative fine-tune." \
+  --output-json /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/stage1_run_report.json \
+  --output-md /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/stage1_run_report.md
+```
+
 ## 2. 工作区结构
 
 当前工作区在：

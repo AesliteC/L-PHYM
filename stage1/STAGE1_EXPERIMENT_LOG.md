@@ -6774,3 +6774,74 @@ side-by-side MP4:
 contact sheet:
   /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/contact_sheet.png
 ```
+
+## 2026-06-13 Stage1 automatic run report helper
+
+Added:
+
+```text
+Script/stage1/summarize_stage1_run.py
+tests/test_stage1_run_summary.py
+```
+
+Purpose:
+
+```text
+quality summary
+  + cache summaries
+  + token distribution diagnostics
+  + train_log.jsonl
+  + baseline-vs-finetuned BVH metrics
+  + video summary
+  + evaluator readiness
+-> report.json + report.md
+```
+
+This reduces manual transcription errors when moving numbers into the final
+report, and keeps the paper-metric readiness gate visible next to engineering
+metrics.
+
+Generated the current best-run report with:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/summarize_stage1_run.py \
+  --run-name long_fixed_native200_head_epoch5_20260613 \
+  --quality-summary /tmp/stage1_long_fixed_bvh_native_200_20260613/quality_summary.json \
+  --train-cache-summary /tmp/stage1_long_fixed_bvh_native_200_20260613/train_cache_summary.json \
+  --val-cache-summary /tmp/stage1_long_fixed_bvh_native_200_20260613/val_cache_summary.json \
+  --train-token-distribution /tmp/stage1_long_fixed_bvh_native_200_20260613/train_token_distribution.json \
+  --val-token-distribution /tmp/stage1_long_fixed_bvh_native_200_20260613/val_token_distribution.json \
+  --train-log /tmp/stage1_long_fixed_bvh_native_200_head_seed13_5ep_20260613/train_log.jsonl \
+  --metrics-json /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/summary_metrics.json \
+  --comparison-video-summary /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/video/summary.json \
+  --evaluation-readiness /tmp/stage1_eval_readiness_long_native_200_20260613.json \
+  --checkpoint /tmp/stage1_long_fixed_bvh_native_200_head_seed13_5ep_20260613/checkpoint_epoch_5.pth \
+  --notes "Current best Stage1 engineering run: long HumanML3D -> BVH -> MoConVQ native retarget, head-only conservative fine-tune." \
+  --output-json /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/stage1_run_report.json \
+  --output-md /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/stage1_run_report.md
+```
+
+Report output:
+
+```text
+/tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/stage1_run_report.json
+/tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/stage1_run_report.md
+```
+
+Key report contents:
+
+```text
+accepted rate = 0.455
+train cache = 278 windows, 55,516 valid tokens
+val cache = 66 windows, 13,200 valid tokens
+train token top fractions = depth0 0.063, depth1 0.022, depth2 0.048, depth3 0.071
+val token top fractions = depth0 0.047, depth1 0.038, depth2 0.042, depth3 0.080
+val loss = 8.980 -> 8.443
+avg frames = 1062 -> 1194
+early stop rate = 0.75 -> 0.50
+root path length = 3.472 -> 4.187
+pose velocity = 14.052 -> 19.133
+pose variance = 141.194 -> 190.011
+paper_metrics_ready = false
+```
