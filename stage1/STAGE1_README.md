@@ -52,6 +52,37 @@ HumanML3D 长序列合成
 测试链路已成功跑通；旧 finetune checkpoint 已判定为无效反例；后续应基于修复后的 GPT 上下文 latent 逻辑重新训练，并优先使用保守微调范围评估。
 ```
 
+2026-06-13 更新：当前更准确的 Stage1 诊断是：
+
+```text
+HumanML3D 长序列合成本身基本可用；
+旧 hand-written HumanML3D -> MoConVQ body state/cache 路径会造成明显 token collapse；
+long_sequences.h5 -> BVH -> MoConVQ 原生 character retarget 是当前最可信主线；
+修复后的 train_real_text_gpt.py 能在该 native cache 上稳定下降 loss；
+finetuned 生成在工程指标的平均长度和早停率上超过 baseline；
+但 HumanML3D 论文指标 FID/R-precision 仍缺 evaluator assets，不能诚实报告论文级提升。
+```
+
+当前最好的一次主线结果来自 200 条 long HumanML3D 的 BVH-native 实验：
+
+| item | result |
+| --- | --- |
+| exported long BVH | 200 |
+| native-retarget accepted | 91 |
+| train/val split | 73 / 18 sequences |
+| train cache | 278 windows, 55,516 valid RVQ tokens |
+| val cache | 66 windows, 13,200 valid RVQ tokens |
+| train token top fraction | depth0 0.063, depth1 0.022 |
+| training | base_head, 5 epochs, val loss 7.913 -> 6.230 |
+| generation avg frames | baseline 1062, finetuned 1170 |
+| generation early-stop rate | baseline 0.75, finetuned 0.50 |
+| visual audit | no obvious fall-over/full-body inversion in contact sheet; finetuned is longer but more energetic/less smooth |
+
+This is the first run where the main HumanML3D reconstruction route gives a
+measurable generation-side improvement over the MoConVQ baseline on the Stage1
+engineering metrics.  It is still not a paper-level claim because FID and
+R-precision are unavailable without the pretrained HumanML3D evaluator.
+
 ## 2. 工作区结构
 
 当前工作区在：

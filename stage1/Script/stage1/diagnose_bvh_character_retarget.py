@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 import argparse
+import glob
 import json
 import sys
 
@@ -31,6 +32,25 @@ from Script.stage1.real_moconvq_cache import (
     _indices_to_time_depth,
     build_loaded_moconvq_agent,
 )
+
+
+def collect_bvh_files(paths: list[str]) -> list[Path]:
+    files: list[Path] = []
+    for raw in paths:
+        path = Path(raw)
+        if path.is_dir():
+            files.extend(sorted(path.glob("*.bvh")))
+        else:
+            matches = [Path(item) for item in sorted(glob.glob(raw))]
+            files.extend(matches if matches else [path])
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for path in files:
+        resolved = path.resolve()
+        if resolved not in seen:
+            unique.append(path)
+            seen.add(resolved)
+    return unique
 
 
 def extract_bvh_with_moconvq_character(
@@ -203,8 +223,11 @@ def main(argv: Iterable[str] | None = None) -> None:
         motion_dataset=Path(args.motion_dataset) if args.motion_dataset else None,
     )
     agent.eval()
+    bvh_files = collect_bvh_files(args.bvh_files)
+    if not bvh_files:
+        raise SystemExit("no BVH files matched the provided inputs")
     payload = diagnose_bvh_character_retarget(
-        [Path(path) for path in args.bvh_files],
+        bvh_files,
         agent=agent,
         fps=args.fps,
         rvq_depth=args.rvq_depth,
@@ -224,7 +247,7 @@ def main(argv: Iterable[str] | None = None) -> None:
             json.dumps(
                 {
                     "output_json": args.output_json,
-                    "paths": len(args.bvh_files),
+                    "paths": len(bvh_files),
                     "state_shape": summary.get("state_shape"),
                     "observation_shape": summary.get("observation_shape"),
                     "token_shape": summary.get("shape"),

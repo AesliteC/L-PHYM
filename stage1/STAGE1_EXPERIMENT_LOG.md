@@ -6381,3 +6381,289 @@ This smoke result changes the diagnosis of Stage1:
   token distribution;
 - the next main experiment should scale this long BVH-native route, then train
   and compare baseline vs fine-tuned generation on long prompts.
+
+## 2026-06-13 Long HumanML3D BVH-native 200-sequence training run
+
+### Goal
+
+Check the three Stage1 failure candidates under one reproducible run:
+
+```text
+long-sequence synthesis
+  -> HumanML3D/BVH mapping into MoConVQ body state and observation
+  -> text-conditioned MoConGPT fine-tuning and long-prompt generation
+```
+
+This run uses the existing synthesized long HumanML3D dataset, exports 200 long
+sequences to BVH, filters them through MoConVQ's original
+`MotionDataSet.add_bvh_with_character()` path, builds a GPT cache from accepted
+samples, trains a conservative `base_head` checkpoint, and compares it against
+the original `text_generation_GPT.pth` baseline.
+
+### Data export and retarget quality
+
+Export command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/export_long_humanml3d_to_bvh.py \
+  --long-h5 stage1_artifacts/long_humanml3d_fixed/train/long_sequences.h5 \
+  --manifest stage1_artifacts/long_humanml3d_fixed/train/manifest.jsonl \
+  --limit 200 \
+  --output-dir /tmp/stage1_long_fixed_bvh_native_200_20260613/train_bvh \
+  --summary /tmp/stage1_long_fixed_bvh_native_200_20260613/export_summary.json \
+  --quiet
+```
+
+Result:
+
+```text
+exports = 200
+rotation_source = joints_ik
+```
+
+BVH engineering metrics:
+
+```text
+rows = 200
+early_stop = 27     # expected_min_frames = 240
+```
+
+Native retarget diagnostic:
+
+```text
+paths = 200
+state_shape = [84321, 20, 13]
+observation_shape = [84321, 323]
+token_shape = [21080, 4]
+p99_abs_z = 5.8860
+max_abs_z = 90.7866
+per_file = 200
+comparisons = 1
+```
+
+Quality filter:
+
+```text
+total = 200
+accepted = 91
+rejected = 109
+```
+
+Main reject reasons:
+
+| reason | count |
+| --- | ---: |
+| depth0_top_frac > 0.25 | 64 |
+| max_abs_z > 50 | 52 |
+| p99_abs_z > 8 | 46 |
+| depth0_unique < 16 | 19 |
+| frames < 120 | 5 |
+
+Interpretation: long-sequence duration is not the major problem.  Most rejected
+samples fail because the MoConVQ-native retargeted observation becomes
+out-of-distribution or the depth0 token stream collapses for that sample.  This
+points to HumanML3D-to-character mapping/retarget quality as the current main
+data bottleneck.
+
+### GPT cache
+
+Accepted rows were split with seed 13:
+
+```text
+train sequences = 73
+val sequences = 18
+```
+
+Cache summaries:
+
+| split | windows | valid RVQ tokens | unique sequences |
+| --- | ---: | ---: | ---: |
+| train | 278 | 55,516 | 73 |
+| val | 66 | 13,200 | 18 |
+
+Token distribution:
+
+| split | depth0 top frac | depth1 top frac | depth2 top frac | depth3 top frac |
+| --- | ---: | ---: | ---: | ---: |
+| train | 0.0626 | 0.0219 | 0.0481 | 0.0709 |
+| val | 0.0473 | 0.0382 | 0.0424 | 0.0803 |
+
+For comparison, the old hand-written fixed cache had:
+
+```text
+depth0 top fraction = 0.2171
+depth1 top fraction = 0.3342
+```
+
+Conclusion: the BVH-native cache is much less collapsed than the old
+hand-written HumanML3D-to-observation cache.
+
+### Training
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/train_real_text_gpt.py \
+  --train-cache /tmp/stage1_long_fixed_bvh_native_200_20260613/train_cache.pt \
+  --val-cache /tmp/stage1_long_fixed_bvh_native_200_20260613/val_cache.pt \
+  --init-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --output-dir /tmp/stage1_long_fixed_bvh_native_200_basehead_seed13_5ep_20260613 \
+  --epochs 5 \
+  --batch-size 8 \
+  --lr 1e-5 \
+  --weight-decay 0.01 \
+  --gpu 0 \
+  --seed 13 \
+  --save-every 1 \
+  --num-workers 2 \
+  --train-scope base_head \
+  --baseline-kl-weight 0.05 \
+  --kl-temperature 2.0 \
+  --progress-conditioning auto \
+  --progress-scale 0.5 \
+  --teacher-progress-conditioning none \
+  --context-size 51
+```
+
+Training curve:
+
+| epoch | train loss | train acc | val loss | val acc |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 8.5605 | 0.0422 | 7.9130 | 0.0531 |
+| 1 | 7.4678 | 0.0453 | 7.1523 | 0.0568 |
+| 2 | 6.9107 | 0.0503 | 6.6901 | 0.0643 |
+| 3 | 6.5063 | 0.0580 | 6.4046 | 0.0688 |
+| 4 | 6.2825 | 0.0643 | 6.2298 | 0.0739 |
+
+Checkpoint used for generation:
+
+```text
+/tmp/stage1_long_fixed_bvh_native_200_basehead_seed13_5ep_20260613/checkpoint_epoch_5.pth
+```
+
+Interpretation: the repaired cache and training code are working.  Loss and
+accuracy move in the expected direction, unlike the earlier invalid/weak runs.
+
+### Baseline vs fine-tuned generation
+
+Generation suite:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/run_stage1_model_suite.py \
+  --run-id long_fixed_native200_basehead_epoch5_20260613 \
+  --suite-dir /tmp/stage1_long_fixed_bvh_native_200_basehead_epoch5_compare_20260613 \
+  --baseline-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --finetuned-checkpoint /tmp/stage1_long_fixed_bvh_native_200_basehead_seed13_5ep_20260613/checkpoint_epoch_5.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-encoder t5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --max-length 75 \
+  --generation-mode auto \
+  --context-size 30 \
+  --chunk-size 20 \
+  --top-k 0 \
+  --top-p 0.95 \
+  --temperature 1.0 \
+  --progress-conditioning auto \
+  --baseline-progress-conditioning none \
+  --progress-scale 0.5 \
+  --progress-context-size 51 \
+  --progress-prefix-cap 25 \
+  --seed 123 \
+  --expected-min-frames 1200 \
+  --skip-backup
+```
+
+Frames by prompt:
+
+| prompt | baseline frames | fine-tuned frames | baseline early stop | fine-tuned early stop |
+| --- | ---: | ---: | --- | --- |
+| walk_turn_wave | 816 | 864 | true | true |
+| circle_crouch_stand | 1176 | 1296 | true | false |
+| walk_jump_dance | 1392 | 1656 | false | false |
+| sidestep_kick_turn | 864 | 864 | true | true |
+
+Model averages:
+
+| model | avg frames | early stop rate | avg root path | avg root displacement | avg pose velocity | avg pose variance | lag20 repeat >0.995 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline top-p | 1062 | 0.75 | 3.472 | 1.268 | 14.052 | 141.194 | 0.000 |
+| fine-tuned top-p | 1170 | 0.50 | 3.538 | 1.231 | 29.972 | 277.800 | 0.000 |
+
+Artifacts:
+
+```text
+BVH:
+  /tmp/stage1_long_fixed_bvh_native_200_basehead_epoch5_compare_20260613/bvh/
+
+metrics:
+  /tmp/stage1_long_fixed_bvh_native_200_basehead_epoch5_compare_20260613/summary_metrics.json
+  /tmp/stage1_long_fixed_bvh_native_200_basehead_epoch5_compare_20260613/bvh/summary_metrics_script.json
+
+side-by-side MP4:
+  /tmp/stage1_long_fixed_bvh_native_200_basehead_epoch5_compare_20260613/video/
+
+contact sheet:
+  /tmp/stage1_long_fixed_bvh_native_200_basehead_epoch5_compare_20260613/contact_sheet.png
+```
+
+Visual/contact-sheet audit:
+
+- no obvious fall-over, full-body inversion, or broken skeleton was visible in
+  the sampled contact sheet;
+- fine-tuned output is longer for 3 of 4 prompts;
+- `circle_crouch_stand` crosses the 1200-frame threshold after fine-tuning;
+- `walk_jump_dance` becomes substantially longer but also has much higher pose
+  velocity/variance, so its extra motion is more energetic and less smooth;
+- `sidestep_kick_turn` remains effectively unchanged in length and still early
+  stops.
+
+### Paper metrics readiness
+
+Readiness check:
+
+```text
+paper_metrics_ready = false
+missing:
+  - HumanML3D text-motion evaluator source files
+  - pretrained HumanML3D evaluator / motion-feature extractor checkpoints
+```
+
+Therefore this run can claim improvement only on Stage1 engineering metrics
+and visual audit, not on MoConVQ paper metrics FID/R-precision.
+
+### Conclusion
+
+This is the first main-route HumanML3D experiment that gives a measurable
+generation-side improvement over the original MoConVQ text GPT baseline:
+
+```text
+average frames:     1062 -> 1170
+early-stop rate:    0.75 -> 0.50
+root path length:   3.472 -> 3.538
+```
+
+It also identifies the remaining bottleneck:
+
+```text
+200 exported long sequences
+  -> 91 accepted by native retarget quality filter
+  -> 109 rejected mostly for token collapse or observation z-score outliers
+```
+
+So the current Stage1 answer is:
+
+- long HumanML3D synthesis is workable;
+- the old hand-written HumanML3D-to-MoConVQ cache path should not be used for
+  final training claims;
+- BVH-native retarget is the working replacement path;
+- conservative GPT fine-tuning on the native cache works and improves length
+  and early-stop engineering metrics;
+- visual quality is somewhat better than previous failed fine-tunes, but still
+  not fully stable because pose velocity/variance increase;
+- FID/R-precision still require missing HumanML3D evaluator assets.

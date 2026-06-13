@@ -22,6 +22,22 @@ class _FakeAgent:
 
 
 class Stage1BVHCharacterRetargetTests(unittest.TestCase):
+    def test_collect_bvh_files_accepts_directories_globs_and_dedupes(self):
+        from Script.stage1.diagnose_bvh_character_retarget import collect_bvh_files
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            first = tmp / "a.bvh"
+            second = tmp / "b.bvh"
+            ignored = tmp / "c.txt"
+            first.write_text("a", encoding="utf-8")
+            second.write_text("b", encoding="utf-8")
+            ignored.write_text("c", encoding="utf-8")
+
+            files = collect_bvh_files([str(tmp), str(tmp / "*.bvh"), str(first)])
+
+        self.assertEqual([path.name for path in files], ["a.bvh", "b.bvh"])
+
     def test_direct_script_execution_prefers_own_repo_root(self):
         from pathlib import Path
 
