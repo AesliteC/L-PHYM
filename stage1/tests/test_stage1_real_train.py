@@ -6,6 +6,20 @@ import torch
 
 
 class Stage1RealTrainTests(unittest.TestCase):
+    def test_direct_script_execution_prefers_own_repo_root(self):
+        import Script.stage1.train_real_text_gpt as train
+
+        expected_root = Path(train.__file__).resolve().parents[2]
+        old_path = list(train.sys.path)
+        try:
+            train.sys.path[:] = ["/tmp/other_checkout"] + [
+                path for path in old_path if Path(path or ".").resolve() != expected_root
+            ]
+            train._ensure_own_repo_root_on_path(package="")
+            self.assertEqual(Path(train.sys.path[0]).resolve(), expected_root)
+        finally:
+            train.sys.path[:] = old_path
+
     def test_loss_and_metrics_ignore_padding_token(self):
         from Script.stage1.train_real_text_gpt import compute_loss_and_metrics
 

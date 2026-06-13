@@ -3663,3 +3663,275 @@ Result:
 py_compile passed
 7 tests passed
 ```
+
+## 2026-06-13: Processed HumanML3D to MoConVQ-template BVH export smoke
+
+### Purpose
+
+The previous readiness audit showed that the local HumanML3D processed corpus is
+complete, but original `pose_data`/AMASS source motions and large BVH exports are
+missing.  To keep moving on the main HumanML3D route without claiming that the
+retarget problem is solved, I added a conservative bridge:
+
+```text
+Script/stage1/export_humanml3d_to_bvh.py
+tests/test_stage1_humanml3d_bvh_export.py
+```
+
+The exporter:
+
+```text
+HumanML3D new_joints/new_joint_vecs
+-> HumanML3D global 22-joint rotations from 6D representation
+-> map to MoConVQ 20-body order
+-> write MOTION rows under the existing base.bvh hierarchy
+-> feed the resulting BVH into MotionDataSet.add_bvh_with_character()
+```
+
+This is a smoke bridge, not a final retarget-quality claim.  It deliberately
+reuses `base.bvh`'s hierarchy and channel order so that MoConVQ's native BVH
+loader sees a familiar skeleton.
+
+### Code fixes while testing
+
+The BVH diagnostic/cache scripts had the same multi-checkout direct-script import
+hazard previously fixed in `generate_long_motion.py`: when run as
+`python Script/stage1/*.py`, Python could import `Script.stage1.*` modules from
+the older dirty checkout.  I added repo-root path guards and explicit
+`--motion-dataset` forwarding to:
+
+```text
+Script/stage1/diagnose_bvh_character_retarget.py
+Script/stage1/build_bvh_character_gpt_cache.py
+Script/stage1/train_real_text_gpt.py
+```
+
+The `--motion-dataset` argument is important in the clean `main/stage1` worktree
+because the large `simple_motion_data.h5` asset is stored in the older local
+MoConVQ worktree and is not committed.
+
+### BVH export command
+
+Executed from:
+
+```text
+/home/chenjie/cc/robotics/MoConVQ-main/stage1
+```
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/export_humanml3d_to_bvh.py \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --sample-id 000021 \
+  --sample-id 012314 \
+  --output-dir stage1_artifacts/humanml_bvh_export_smoke_20260613 \
+  --summary stage1_artifacts/humanml_bvh_export_smoke_20260613/export_summary.json
+```
+
+Result:
+
+```text
+000021.bvh:
+  frames = 179
+  channels = 63
+  frame_time = 0.05
+  caption = person is walking normally in a circle
+
+012314.bvh:
+  frames = 170
+  channels = 63
+  frame_time = 0.05
+  caption = a person appears to be playing tennis and shoots the ball with the racket in his right hand
+```
+
+Parser sanity check:
+
+```text
+000021.bvh nodes = 25, motion shape = (179, 63), first root = [0.0, 0.9741, 0.0, 0.0, 0.0, 0.0]
+012314.bvh nodes = 25, motion shape = (170, 63), first root = [0.0, 0.8370, 0.0, 0.0, 0.0, 0.0]
+```
+
+### BVH engineering metrics
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/evaluate_bvh_metrics.py \
+  stage1_artifacts/humanml_bvh_export_smoke_20260613/*.bvh \
+  --expected-min-frames 120 \
+  --output stage1_artifacts/humanml_bvh_export_smoke_20260613/export_bvh_metrics.json
+```
+
+Result:
+
+| sample | frames | duration | root path | root displacement | pose velocity mean | pose variance mean | early stop |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 000021 | 179 | 8.95 | 5.385233 | 0.124187 | 198.533001 | 2387.514295 | false |
+| 012314 | 170 | 8.50 | 5.523310 | 0.094050 | 195.905735 | 1744.774603 | false |
+
+The high pose velocity/variance is a warning sign.  It may reflect Euler
+discontinuities, imperfect local rotation mapping, or both.  These BVHs are
+therefore only a path smoke until rendered and manually inspected.
+
+### Native MoConVQ BVH retarget diagnostic
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/diagnose_bvh_character_retarget.py \
+  stage1_artifacts/humanml_bvh_export_smoke_20260613/000021.bvh \
+  stage1_artifacts/humanml_bvh_export_smoke_20260613/012314.bvh \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --native-h5 /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --native-observation-key walk1_subject5/observation \
+  --fps 20 \
+  --output-json stage1_artifacts/humanml_bvh_export_smoke_20260613/native_retarget_diagnostic.json
+```
+
+Result:
+
+```text
+state_shape = [349, 20, 13]
+observation_shape = [349, 323]
+RVQ token shape = [87, 4]
+observation |z| mean = 1.4201
+observation |z| p95 = 4.6358
+observation |z| p99 = 12.0568
+observation |z| max = 25.5605
+observation frac_gt_5 = 0.0433
+observation frac_gt_10 = 0.0139
+```
+
+Token distribution compared to native `simple_motion_data.h5`:
+
+| depth | exported-BVH unique | native unique | JS divergence bits | exported entropy | native entropy | exported top frac |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 16 | 139 | 1.000000 | 3.201233 | 5.981861 | 0.333333 |
+| 1 | 31 | 366 | 0.941444 | 4.150506 | 8.072053 | 0.264368 |
+| 2 | 46 | 412 | 0.859005 | 5.081799 | 8.378403 | 0.103448 |
+| 3 | 54 | 418 | 0.837896 | 5.521806 | 8.374331 | 0.057471 |
+
+Interpretation:
+
+- The exported processed-HumanML3D BVH can be consumed by MoConVQ's native
+  `MotionDataSet.add_bvh_with_character()` path.
+- Distribution quality is not yet good: depth0 JS is near the maximum and
+  observation p99 `|z|` is high.
+- This is still better as an engineering path than the previous hand-written
+  cache in one important sense: it exercises MoConVQ's original BVH-to-character
+  retarget code instead of directly fabricating simulator state.
+- It is not ready for final fine-tuning claims without rendering, semantic
+  inspection, and larger-sample diagnostics.
+
+### GPT cache smoke
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --bvh "stage1_artifacts/humanml_bvh_export_smoke_20260613/000021.bvh=person is walking normally in a circle" \
+  --bvh "stage1_artifacts/humanml_bvh_export_smoke_20260613/012314.bvh=a person appears to be playing tennis and shoots the ball with the racket in his right hand" \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 20 \
+  --window-stride 10 \
+  --fps 20 \
+  --output stage1_artifacts/humanml_bvh_export_smoke_20260613/gpt_cache.pt \
+  --observation-h5 stage1_artifacts/humanml_bvh_export_smoke_20260613/observations.h5 \
+  --summary stage1_artifacts/humanml_bvh_export_smoke_20260613/gpt_cache_summary.json
+```
+
+Result:
+
+```text
+windows = 8
+latents_shape = [8, 20, 768]
+indices_shape = [8, 20, 4]
+text_features_shape = [8, 256, 1024]
+valid_tokens = 640
+index_min = 0
+index_max = 509
+unique_sequences = 2
+```
+
+Cache token distribution:
+
+| depth | tokens | unique | entropy bits | top frac |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 160 | 15 | 3.124159 | 0.343750 |
+| 1 | 160 | 31 | 4.134691 | 0.250000 |
+| 2 | 160 | 44 | 4.919886 | 0.137500 |
+| 3 | 160 | 57 | 5.614343 | 0.050000 |
+
+Training-data loader smoke:
+
+```text
+RealStage1CacheDataset length = 8
+latent batch = (2, 20, 768)
+indices batch = (2, 20, 4)
+text_feature batch = (2, 256, 1024)
+text_mask batch = (2, 256)
+target_mask batch = (2, 20)
+autoregressive pre_latent = (2, 19, 768)
+targets = (2, 20, 4)
+first caption = person is walking normally in a circle
+first sequence_id = 0000_000021
+```
+
+Full `train_real_text_gpt.py --smoke` was attempted on CPU.  The environment
+reported `GPU not detected`; both `train_scope=all` and `train_scope=head`
+remained too slow for a quick smoke and were interrupted manually.  This does
+not contradict cache readability; it means full forward/backward smoke should be
+rerun on GPU before using this cache for any training claim.
+
+### Verification
+
+Commands run with the `moconvq` conda environment:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/export_humanml3d_to_bvh.py \
+  Script/stage1/diagnose_bvh_character_retarget.py \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  Script/stage1/train_real_text_gpt.py \
+  tests/test_stage1_humanml3d_bvh_export.py \
+  tests/test_stage1_bvh_character_retarget.py \
+  tests/test_stage1_bvh_character_cache.py \
+  tests/test_stage1_real_train.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_humanml3d_bvh_export \
+  tests.test_stage1_bvh_character_retarget \
+  tests.test_stage1_bvh_character_cache \
+  tests.test_stage1_real_train \
+  tests.test_stage1_data_readiness \
+  tests.test_stage1_repository_hygiene \
+  -v
+```
+
+Result:
+
+```text
+py_compile passed
+32 tests passed
+```
+
+### Next action
+
+The exporter creates a concrete path to test the main HumanML3D route without
+restored AMASS source files, but it needs quality work before scale-up:
+
+```text
+1. render 000021.bvh and 012314.bvh to MP4 and inspect for flips/twists;
+2. reduce Euler discontinuity or switch to a more stable local rotation export;
+3. run a larger sampled export diagnostic and compare observation z-scores/token
+   distributions against native MoConVQ data;
+4. only then build a larger GPT cache and train on GPU.
+```

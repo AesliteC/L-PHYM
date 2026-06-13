@@ -6,7 +6,19 @@ import argparse
 from contextlib import contextmanager
 import json
 import os
+import sys
 import time
+
+
+def _ensure_own_repo_root_on_path(package: str | None = __package__) -> None:
+    if package not in {None, ""}:
+        return
+    repo_root = str(Path(__file__).resolve().parents[2])
+    if not sys.path or sys.path[0] != repo_root:
+        sys.path.insert(0, repo_root)
+
+
+_ensure_own_repo_root_on_path()
 
 import torch
 import torch.nn as nn

@@ -4,6 +4,18 @@ from pathlib import Path
 from typing import Iterable
 import argparse
 import json
+import sys
+
+
+def _ensure_own_repo_root_on_path(package: str | None = __package__) -> None:
+    if package not in {None, ""}:
+        return
+    repo_root = str(Path(__file__).resolve().parents[2])
+    if not sys.path or sys.path[0] != repo_root:
+        sys.path.insert(0, repo_root)
+
+
+_ensure_own_repo_root_on_path()
 
 import numpy as np
 import torch
@@ -102,6 +114,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         help="Alias for --bvh; accepted for consistency with native cache specs.",
     )
     parser.add_argument("--base-data", default="moconvq_base.data")
+    parser.add_argument("--motion-dataset", default="")
     parser.add_argument("--text-model", default="t5-large")
     parser.add_argument("--max-text-length", type=int, default=256)
     parser.add_argument("--window-size", type=int, default=50)
@@ -122,7 +135,11 @@ def main(argv: Iterable[str] | None = None) -> None:
 
     import MoConVQCore.Utils.pytorch_utils as ptu
 
-    agent = build_loaded_moconvq_agent(gpu=args.gpu, base_data=Path(args.base_data))
+    agent = build_loaded_moconvq_agent(
+        gpu=args.gpu,
+        base_data=Path(args.base_data),
+        motion_dataset=Path(args.motion_dataset) if args.motion_dataset else None,
+    )
     text_encoder = build_t5_text_encoder(args.text_model, device=str(ptu.device), max_length=args.max_text_length)
     cache = build_bvh_character_cache(
         bvh_specs=bvh_specs,

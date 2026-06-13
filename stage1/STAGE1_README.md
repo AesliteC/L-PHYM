@@ -419,6 +419,7 @@ HumanML3D 263-d vector -> heuristic 768-d latent -> RVQ quantization -> GPT smok
 ```text
 Script/stage1/synthesize_long_humanml3d.py
 Script/stage1/check_stage1_data_readiness.py
+Script/stage1/export_humanml3d_to_bvh.py
 Script/stage1/build_real_moconvq_gpt_cache.py
 Script/stage1/build_bvh_character_gpt_cache.py
 Script/stage1/train_real_text_gpt.py
@@ -431,6 +432,13 @@ Script/stage1/train_real_text_gpt.py
 在 HumanML3D 规模上构建 cache。先运行 `check_stage1_data_readiness.py` 确认
 source motion/BVH 状态，再决定是恢复 AMASS/HumanML3D source motion，还是实现并验证
 `new_joints` 到 MoConVQ-compatible BVH 的导出。
+
+`export_humanml3d_to_bvh.py` 已经提供一个 processed HumanML3D 到 `base.bvh`
+hierarchy 的桥接 smoke：导出的 BVH 可以被 MoConVQ 原生
+`MotionDataSet.add_bvh_with_character()` 读取并构造 GPT cache。但当前两条样本的
+observation p99 `|z|` 约为 `12.06`，depth0 token top fraction 约为 `0.34`，
+说明质量仍未达最终训练要求。扩大使用前必须先做 MP4 视觉检查、Euler/local rotation
+稳定性修复和更大样本 token/observation 分布诊断。
 
 ## 6. 还需要完成的工作
 

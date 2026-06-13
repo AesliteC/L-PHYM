@@ -4,6 +4,18 @@ from pathlib import Path
 from typing import Iterable
 import argparse
 import json
+import sys
+
+
+def _ensure_own_repo_root_on_path(package: str | None = __package__) -> None:
+    if package not in {None, ""}:
+        return
+    repo_root = str(Path(__file__).resolve().parents[2])
+    if not sys.path or sys.path[0] != repo_root:
+        sys.path.insert(0, repo_root)
+
+
+_ensure_own_repo_root_on_path()
 
 import h5py
 import numpy as np
@@ -151,6 +163,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("bvh_files", nargs="+")
     parser.add_argument("--base-data", default="moconvq_base.data")
+    parser.add_argument("--motion-dataset", default="")
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--fps", type=int, default=20)
     parser.add_argument("--rvq-depth", type=int, default=4)
@@ -160,7 +173,11 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--output-json", default="")
     args = parser.parse_args(argv)
 
-    agent = build_loaded_moconvq_agent(gpu=args.gpu, base_data=Path(args.base_data))
+    agent = build_loaded_moconvq_agent(
+        gpu=args.gpu,
+        base_data=Path(args.base_data),
+        motion_dataset=Path(args.motion_dataset) if args.motion_dataset else None,
+    )
     agent.eval()
     payload = diagnose_bvh_character_retarget(
         [Path(path) for path in args.bvh_files],

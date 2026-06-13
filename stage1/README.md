@@ -454,6 +454,9 @@ python -m unittest \
 5. **当前本地 HumanML3D 是 processed corpus ready，但不是 native BVH source ready。**
    `/home/chenjie/cc/robotics/HumanML3D` 下的 `all.txt/texts/new_joints/new_joint_vecs` 已对齐，可以用于 catalog、长 caption 合成和诊断；但当前没有 `pose_data/`、标准 AMASS motion `.npz` 或大规模 BVH exports。因此首选的 MoConVQ 原生 `MotionDataSet.add_bvh_with_character()` 数据路线还需要先恢复 source motion 或导出 BVH。
 
+6. **`new_joints/new_joint_vecs -> base.bvh hierarchy` exporter 只是桥接 smoke。**
+   `export_humanml3d_to_bvh.py` 已能把 processed HumanML3D 样本写成 MoConVQ 模板 BVH，并被 `MotionDataSet.add_bvh_with_character()` 读取；但初步诊断中 observation p99 `|z|` 仍偏高、depth0 token 分布偏集中。因此它还不是最终训练数据路线，必须先做视频检查和更大样本分布诊断。
+
 ## 后续工作
 
 Stage1 后续处理以下方向：
@@ -472,6 +475,7 @@ Stage1 后续处理以下方向：
 ```text
 Script/stage1/synthesize_long_humanml3d.py
 Script/stage1/check_stage1_data_readiness.py
+Script/stage1/export_humanml3d_to_bvh.py
 Script/stage1/build_real_moconvq_gpt_cache.py
 Script/stage1/build_bvh_character_gpt_cache.py
 Script/stage1/train_real_text_gpt.py
