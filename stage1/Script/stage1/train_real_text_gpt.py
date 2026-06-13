@@ -436,8 +436,46 @@ def save_checkpoint(model, output_dir: Path, name: str) -> Path:
     return path
 
 
-def validate_output_dir_for_training(output_dir: Path, append_log: bool) -> None:
+def read_training_log_state(log_path: Path) -> dict[str, object]:
+    state: dict[str, object] = {
+        "epochs": [],
+        "last_epoch": None,
+        "best_val_loss": float("inf"),
+    }
+    if not log_path.exists():
+        return state
+    epochs: list[int] = []
+    best_val_loss = float("inf")
+    for line_no, raw in enumerate(log_path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not raw.strip():
+            continue
+        try:
+            row = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid JSON in training log {log_path}:{line_no}") from exc
+        epoch = int(row["epoch"])
+        epochs.append(epoch)
+        val_metrics = row.get("val")
+        if isinstance(val_metrics, dict) and val_metrics.get("loss") is not None:
+            best_val_loss = min(best_val_loss, float(val_metrics["loss"]))
+    state["epochs"] = epochs
+    state["last_epoch"] = max(epochs) if epochs else None
+    state["best_val_loss"] = best_val_loss
+    return state
+
+
+def validate_output_dir_for_training(output_dir: Path, append_log: bool, start_epoch: int = 0) -> None:
     if append_log:
+        log_state = read_training_log_state(output_dir / "train_log.jsonl")
+        existing_epochs = list(log_state["epochs"])
+        if len(existing_epochs) != len(set(existing_epochs)):
+            raise ValueError(f"training log already contains duplicate epoch ids: {output_dir / 'train_log.jsonl'}")
+        last_epoch = log_state["last_epoch"]
+        if last_epoch is not None and int(start_epoch) != int(last_epoch) + 1:
+            raise ValueError(
+                f"--append-log requires --start-epoch {int(last_epoch) + 1} for {output_dir}; "
+                f"got {start_epoch}. Use a fresh --output-dir for a forked run."
+            )
         return
     if output_dir.exists() and any(output_dir.iterdir()):
         raise FileExistsError(
@@ -519,7 +557,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     ptu.init_gpu(True, gpu_id=args.gpu)
     torch.manual_seed(args.seed)
     output_dir = Path(args.output_dir)
-    validate_output_dir_for_training(output_dir, append_log=args.append_log)
+    validate_output_dir_for_training(output_dir, append_log=args.append_log, start_epoch=args.start_epoch)
 
     with training_run_lock(
         output_dir,
@@ -567,8 +605,12 @@ def main(argv: Iterable[str] | None = None) -> None:
             lr=args.lr,
             weight_decay=args.weight_decay,
         )
-        best_val_loss = float("inf")
         log_path = output_dir / "train_log.jsonl"
+        best_val_loss = (
+            float(read_training_log_state(log_path)["best_val_loss"])
+            if args.append_log
+            else float("inf")
+        )
         max_batches = 1 if args.smoke else None
 
         log_mode = "a" if args.append_log else "w"
@@ -618,7 +660,7 @@ def main(argv: Iterable[str] | None = None) -> None:
                         save_checkpoint(model, output_dir, "best_val.pth")
 
                 if (epoch + 1) % max(args.save_every, 1) == 0:
-                    save_checkpoint(model, output_dir, f"checkpoint_epoch_{epoch + 1}.pth")
+                    save_checkpoint(model, output_dir, f"checkpoint_epoch_{epoch_id + 1}.pth")
                 save_checkpoint(model, output_dir, "last.pth")
                 row = {
                     "epoch": epoch_id,

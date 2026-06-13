@@ -354,12 +354,57 @@ class Stage1RealTrainTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
-            (output_dir / "train_log.jsonl").write_text("old\n", encoding="utf-8")
+            (output_dir / "train_log.jsonl").write_text('{"epoch": 0, "val": {"loss": 1.0}}\n', encoding="utf-8")
 
             with self.assertRaises(FileExistsError):
                 validate_output_dir_for_training(output_dir, append_log=False)
 
-            validate_output_dir_for_training(output_dir, append_log=True)
+            validate_output_dir_for_training(output_dir, append_log=True, start_epoch=1)
+
+    def test_append_log_requires_next_epoch_after_existing_log(self):
+        from Script.stage1.train_real_text_gpt import validate_output_dir_for_training
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            (output_dir / "train_log.jsonl").write_text(
+                '{"epoch": 0, "val": {"loss": 3.0}}\n{"epoch": 1, "val": {"loss": 2.0}}\n',
+                encoding="utf-8",
+            )
+
+            validate_output_dir_for_training(output_dir, append_log=True, start_epoch=2)
+            with self.assertRaises(ValueError):
+                validate_output_dir_for_training(output_dir, append_log=True, start_epoch=1)
+
+    def test_append_log_rejects_duplicate_existing_epochs(self):
+        from Script.stage1.train_real_text_gpt import validate_output_dir_for_training
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            (output_dir / "train_log.jsonl").write_text(
+                '{"epoch": 0, "val": {"loss": 3.0}}\n{"epoch": 0, "val": {"loss": 2.0}}\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ValueError):
+                validate_output_dir_for_training(output_dir, append_log=True, start_epoch=1)
+
+    def test_read_training_log_state_tracks_best_val_loss(self):
+        from Script.stage1.train_real_text_gpt import read_training_log_state
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "train_log.jsonl"
+            log_path.write_text(
+                '{"epoch": 0, "val": {"loss": 3.0}}\n'
+                '{"epoch": 1, "val": {"loss": 2.5}}\n'
+                '{"epoch": 2, "val": {"loss": 2.75}}\n',
+                encoding="utf-8",
+            )
+
+            state = read_training_log_state(log_path)
+
+            self.assertEqual(state["epochs"], [0, 1, 2])
+            self.assertEqual(state["last_epoch"], 2)
+            self.assertAlmostEqual(state["best_val_loss"], 2.5)
 
     def test_training_run_lock_rejects_concurrent_writer(self):
         from Script.stage1.train_real_text_gpt import training_run_lock

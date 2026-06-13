@@ -6007,3 +6007,218 @@ paper-level claim by itself.  The next step is to run a longer conservative
 `base_head` or `temporal_base_head` fine-tune from this v2 train cache, then
 compare baseline vs fine-tuned generation on multi-stage prompts with BVH
 metrics, videos, and a semantic checklist.
+
+## 2026-06-13: Batch500 filtered-v2 conservative base_head fine-tune and generation check
+
+This experiment is the first conservative training/generation check using the
+MP4-audited batch500 filtered-v2 cache:
+
+```text
+HumanML3D joints_ik BVH
+  -> MoConVQ-native character retarget
+  -> per-file quality filter + MP4-audit overrides
+  -> deterministic accepted train/val split
+  -> accepted-only GPT cache
+  -> protected base_head fine-tune
+  -> baseline-vs-finetuned top-p BVH/MP4 comparison
+```
+
+It is still small-scale: `73` train windows and `18` val windows.  The purpose
+is to test whether the repaired data route can produce a usable MoConGPT
+checkpoint without immediately destroying baseline behavior.  It is not a final
+Stage1 success claim.
+
+### Training command
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/train_real_text_gpt.py \
+  --train-cache stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_train_v2_seed13.pt \
+  --val-cache stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_val_v2_seed13.pt \
+  --init-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --output-dir /tmp/stage1_batch500_v2_basehead_seed13_5ep_20260613 \
+  --epochs 5 \
+  --batch-size 8 \
+  --lr 1e-5 \
+  --train-scope base_head \
+  --depth-weights 1.0,0.7,0.4,0.2 \
+  --baseline-kl-weight 0.05 \
+  --kl-temperature 2.0 \
+  --end-token-weight 0.01 \
+  --num-workers 0 \
+  --gpu 0 \
+  --seed 13 \
+  --save-every 5
+```
+
+Runtime context:
+
+```text
+PyTorch CUDA was unavailable in the moconvq environment.
+Training ran on CPU.
+train_scope = base_head
+trainable_parameters = 30,577,152
+```
+
+Clean 5-epoch result:
+
+| epoch | train loss | val loss | train acc | val acc |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 15.8651 | 17.6901 | 0.0566 | 0.0472 |
+| 1 | 14.9218 | 17.1599 | 0.0575 | 0.0468 |
+| 2 | 14.5209 | 16.5973 | 0.0591 | 0.0462 |
+| 3 | 13.8787 | 16.0007 | 0.0580 | 0.0462 |
+| 4 | 13.2425 | 15.3757 | 0.0579 | 0.0465 |
+
+The loss curve is monotonic over these five epochs, but token accuracy barely
+changes.  This suggests the model is fitting the small filtered-v2 distribution
+without yet showing clear token-level generalization.
+
+Important artifact hygiene note:
+
+```text
+formal checkpoint for this experiment:
+  /tmp/stage1_batch500_v2_basehead_seed13_5ep_20260613/checkpoint_epoch_5.pth
+
+do not use as the formal 5-epoch checkpoint:
+  /tmp/stage1_batch500_v2_basehead_seed13_5ep_20260613/best_val.pth
+```
+
+After the clean 5-epoch run, an attempted manual resume appended duplicate
+epoch `3`/`4` rows in the same `/tmp` directory and overwrote `best_val.pth`.
+Therefore the formal 5-epoch comparison below uses `checkpoint_epoch_5.pth`,
+which was written at the clean epoch-5 boundary.  The training script has been
+updated after this incident so future `--append-log` runs must start from the
+next logged epoch and initialize `best_val_loss` from the existing log.
+
+### Top-p generation comparison
+
+Command shape:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/run_stage1_model_suite.py \
+  --run-id batch500_v2_basehead_epoch5_top_p_len75_20260613 \
+  --suite-dir /tmp/stage1_batch500_v2_basehead_epoch5_top_p_len75_20260613 \
+  --bvh-dir /tmp/stage1_batch500_v2_basehead_epoch5_top_p_len75_20260613/bvh \
+  --baseline-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --finetuned-checkpoint /tmp/stage1_batch500_v2_basehead_seed13_5ep_20260613/checkpoint_epoch_5.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-encoder t5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --max-length 75 \
+  --generation-mode auto \
+  --context-size 30 \
+  --chunk-size 20 \
+  --top-k 0 \
+  --top-p 0.95 \
+  --temperature 1.0 \
+  --progress-conditioning auto \
+  --baseline-progress-conditioning none \
+  --progress-scale 0.5 \
+  --progress-context-size 51 \
+  --progress-prefix-cap 25 \
+  --seed 123 \
+  --expected-min-frames 1200 \
+  --skip-backup
+```
+
+Rendered MP4s were then produced from the existing BVHs with the explicit conda
+ffmpeg path:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/run_text_gpt_comparison.py \
+  --prompts /tmp/stage1_batch500_v2_basehead_epoch5_top_p_len75_20260613/prompts.tsv \
+  --bvh-dir /tmp/stage1_batch500_v2_basehead_epoch5_top_p_len75_20260613/bvh \
+  --video-dir /tmp/stage1_batch500_v2_basehead_epoch5_top_p_len75_20260613/video \
+  --ffmpeg /home/chenjie/miniconda3/envs/moconvq/bin/ffmpeg \
+  --skip-generation \
+  ...
+```
+
+Generated frames:
+
+| prompt | baseline frames | finetuned frames |
+| --- | ---: | ---: |
+| `walk_turn_wave` | 816 | 816 |
+| `circle_crouch_stand` | 1176 | 1368 |
+| `walk_jump_dance` | 1392 | 1320 |
+| `sidestep_kick_turn` | 864 | 864 |
+
+Model averages from BVH engineering metrics:
+
+| model | avg frames | early stop rate | avg root path | avg pose velocity | avg pose variance | lag20 repeat >0.995 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| baseline top-p | 1062 | 0.75 | 3.472 | 14.052 | 141.194 | 0.000 |
+| finetuned top-p | 1092 | 0.50 | 3.073 | 24.086 | 297.008 | 0.000 |
+
+Artifacts:
+
+```text
+BVH:
+  /tmp/stage1_batch500_v2_basehead_epoch5_top_p_len75_20260613/bvh/
+
+metrics:
+  /tmp/stage1_batch500_v2_basehead_epoch5_top_p_len75_20260613/summary_metrics.json
+  /tmp/stage1_batch500_v2_basehead_epoch5_top_p_len75_20260613/bvh/summary_metrics_script.json
+
+side-by-side MP4:
+  /tmp/stage1_batch500_v2_basehead_epoch5_top_p_len75_20260613/video/
+
+contact sheet:
+  /tmp/stage1_batch500_v2_basehead_epoch5_top_p_len75_20260613/contact_sheet.png
+```
+
+Visual/contact-sheet check:
+
+- no obvious full-body inversion or floor-prone collapse was visible in the
+  sampled contact sheet;
+- `walk_turn_wave` and `sidestep_kick_turn` are nearly unchanged from baseline,
+  including the same early-stop length;
+- `circle_crouch_stand` is longer than baseline and crosses the 1200-frame
+  threshold, but it also has higher pose velocity and pose variance;
+- `walk_jump_dance` is slightly shorter than baseline and also has higher pose
+  velocity/variance.
+
+### Interpretation
+
+This run is useful evidence that the repaired HumanML3D BVH-to-character route
+can produce a trainable MoConGPT cache and a non-collapsed generation
+checkpoint.  It does not yet solve Stage1:
+
+- the fine-tuned model only slightly improves average length and early-stop
+  rate on four long prompts;
+- two prompts are effectively unchanged from baseline;
+- higher pose velocity/variance indicates possible instability or more abrupt
+  generated motion;
+- semantic quality still needs MP4 review beyond the contact sheet;
+- paper-level FID/R-precision remains unavailable without the HumanML3D
+  evaluator assets.
+
+Current conclusion: batch500 filtered-v2 is a better foundation than the old
+hand-written retarget cache, but it is too small and too weak to claim
+improvement over baseline.  The next main-route step should scale the accepted
+BVH cache beyond batch500 and/or fix CUDA training throughput, then repeat the
+same comparison.  The real external/local LLM in-context planning route remains
+unrun and should still be treated as a backup path, not as current evidence.
+
+### Code hygiene fix from this run
+
+The attempted resume exposed a training-script bug:
+
+```text
+--append-log previously allowed duplicate epoch ids and reset best_val_loss.
+```
+
+`Script/stage1/train_real_text_gpt.py` now:
+
+- reads existing `train_log.jsonl` state;
+- rejects duplicate existing epoch ids;
+- requires `--start-epoch` to be exactly the next epoch after the existing log
+  when `--append-log` is used;
+- initializes `best_val_loss` from the existing log during append mode;
+- names periodic checkpoints by global epoch id, e.g. resumed epoch 4 writes
+  `checkpoint_epoch_5.pth`.
