@@ -7421,3 +7421,145 @@ use a faster mirror/manual copy for t2m.zip and glove.zip, or place the four
 required files directly under /tmp/stage1_t2m_evaluator_assets before rerunning
 check_evaluation_readiness.py.
 ```
+
+## 2026-06-13 BVH-to-HumanML3D adapter calibration
+
+### Motivation
+
+The BVH-to-HumanML3D feature adapter removes the hard blocker for feeding
+generated MoConVQ BVHs into a HumanML3D/T2M evaluator, but it is approximate.
+Before using it for paper-style FID/R-precision, I calibrated the adapter with a
+roundtrip test on known HumanML3D motions:
+
+```text
+HumanML3D new_joints/new_joint_vecs
+  -> export_humanml3d_to_bvh.py using MoConVQ/base.bvh and joints_ik
+  -> bvh_to_humanml3d_features.py
+  -> reconstructed HumanML3D 22-joint positions + 263-d feature
+  -> compare against the original HumanML3D arrays
+```
+
+### Added script and tests
+
+Added:
+
+```text
+Script/stage1/calibrate_bvh_to_humanml3d_adapter.py
+tests/test_stage1_bvh_to_humanml3d_calibration.py
+```
+
+The calibration script reports:
+
+```text
+feature MAE/RMSE/p95/max
+standardized feature z MAE/RMSE/p95/max using HumanML3D Mean.npy/Std.npy
+joint MPJPE mean/p95
+root-position error mean/p95
+local joint MPJPE after subtracting root
+```
+
+Validation:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/calibrate_bvh_to_humanml3d_adapter.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_bvh_to_humanml3d_calibration \
+  tests.test_stage1_bvh_to_humanml3d_features \
+  -v
+```
+
+Result:
+
+```text
+8 tests passed
+```
+
+### Three-sample smoke
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/calibrate_bvh_to_humanml3d_adapter.py \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --sample-id 000021 \
+  --sample-id 000001 \
+  --sample-id 000002 \
+  --output-dir /tmp/stage1_bvh_to_humanml3d_calibration_smoke \
+  --summary /tmp/stage1_bvh_to_humanml3d_calibration_smoke/summary.json
+```
+
+Result:
+
+```text
+samples:                 3
+avg feature MAE:         0.0693
+avg feature RMSE:        0.1450
+avg feature z MAE:       0.2938
+avg feature z RMSE:      0.5262
+avg feature z p95 abs:   1.2715
+avg joint MPJPE:         0.0787
+avg local joint MPJPE:   0.0787
+avg root position error: 4.71e-7
+```
+
+### Test-split 20-sample calibration
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/calibrate_bvh_to_humanml3d_adapter.py \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --split test \
+  --limit 20 \
+  --seed 13 \
+  --output-dir /tmp/stage1_bvh_to_humanml3d_calibration_test20_20260613 \
+  --summary /tmp/stage1_bvh_to_humanml3d_calibration_test20_20260613/summary.json
+```
+
+Result:
+
+```text
+samples:                      20
+avg feature MAE:              0.0722
+max feature MAE:              0.1009
+avg feature RMSE:             0.1540
+max feature RMSE:             0.2115
+avg feature p95 abs:          0.3951
+avg feature z MAE:            0.3049
+max feature z MAE:            0.4637
+avg feature z RMSE:           0.5694
+max feature z RMSE:           0.9235
+avg feature z p95 abs:        1.3696
+max feature z p95 abs:        1.8286
+avg joint MPJPE:              0.0796
+max joint MPJPE:              0.0841
+avg local joint MPJPE:        0.0796
+avg root position error:      4.85e-7
+max root position error mean: 5.15e-7
+```
+
+### Interpretation
+
+The root trajectory roundtrip is effectively exact, so BVH root translation and
+20 FPS timing are stable.  The remaining error is dominated by skeleton
+adaptation: MoConVQ/base.bvh has a 20-body character hierarchy, while HumanML3D
+uses 22 joints and has extra spine/neck/head joints.  Those joints are currently
+approximated from the MoConVQ torso/head chain.
+
+This means the adapter is good enough for engineering readiness and for a
+clearly labeled approximate evaluator-adapter route, but it is not a zero-error
+bridge.  If the T2M evaluator assets become available, any FID/R-precision
+computed through this adapter must be reported with this calibration caveat.  It
+should not be presented as native HumanML3D/SMPL evaluation.
+
+The current paper-metric blockers are therefore:
+
+```text
+1. missing pretrained T2M evaluator checkpoint/glove assets;
+2. nonzero BVH-to-HumanML3D adapter calibration error, which must be disclosed
+   or reduced before strong paper-level claims.
+```

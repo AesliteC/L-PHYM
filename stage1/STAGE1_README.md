@@ -842,6 +842,8 @@ python Script/stage1/prepare_t2m_evaluator_assets.py \
 ```text
 Script/stage1/bvh_to_humanml3d_features.py
 tests/test_stage1_bvh_to_humanml3d_features.py
+Script/stage1/calibrate_bvh_to_humanml3d_adapter.py
+tests/test_stage1_bvh_to_humanml3d_calibration.py
 ```
 
 它的路径是：
@@ -868,7 +870,32 @@ resampled joints: 276 at 20 FPS
 feature shape:    275 x 263
 ```
 
-这个 adapter 消除了“完全没有 BVH -> HumanML3D feature 转换”的硬缺口，但它仍然是骨架近似：直接对应的关节按 BVH node 名复制，HumanML3D 的 spine/neck/head 中间关节由 MoConVQ torso/head chain 插值得到。因此在 evaluator assets 补齐后，还必须先校准这个 adapter，再把 FID/R-precision 写成论文级指标。
+这个 adapter 消除了“完全没有 BVH -> HumanML3D feature 转换”的硬缺口，但它仍然是骨架近似：直接对应的关节按 BVH node 名复制，HumanML3D 的 spine/neck/head 中间关节由 MoConVQ torso/head chain 插值得到。2026-06-13 已增加 roundtrip calibration：
+
+```bash
+python Script/stage1/calibrate_bvh_to_humanml3d_adapter.py \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --split test \
+  --limit 20 \
+  --seed 13 \
+  --output-dir /tmp/stage1_bvh_to_humanml3d_calibration_test20_20260613 \
+  --summary /tmp/stage1_bvh_to_humanml3d_calibration_test20_20260613/summary.json
+```
+
+校准方式是把已知 HumanML3D `new_joints/new_joint_vecs` 样本导出成 MoConVQ/base.bvh，再通过当前 adapter 转回 HumanML3D 22-joint 和 263-d feature，最后和原始 HumanML3D 数据比较。20 个 test split 样本结果：
+
+```text
+avg feature MAE:      0.0722
+max feature MAE:      0.1009
+avg feature z RMSE:   0.5694
+avg feature z p95 abs:1.3696
+max feature z p95 abs:1.8286
+avg joint MPJPE:      0.0796
+max joint MPJPE:      0.0841
+root position error:  ~4.8e-7
+```
+
+解释：root 轨迹几乎无误差，说明 BVH root translation 往返是稳定的；约 `0.08` 的平均关节误差和标准化 feature p95 约 `1.37` 主要来自 MoConVQ/base.bvh 与 HumanML3D 骨架不完全同构，尤其是 spine/neck/head 近似。因此这个 adapter 可以用于“生成 BVH 能否转成 HumanML3D feature”的工程检查和 evaluator 接入前校准，但即使 evaluator assets 补齐，也必须在报告中把 FID/R-precision 标为 approximate/evaluator-adapter route，不能把它当成原生 HumanML3D/SMPL 无偏评估。
 
 为了避免每次实验只比较单一路线，当前推荐把最终 Stage1 对比实验收敛到统一 suite：
 
@@ -904,7 +931,7 @@ suite_summary.json
 
 如果从临时 worktree 或仓库外部运行，建议显式传 `--motion-dataset /abs/path/to/simple_motion_data.h5`。MoConVQ 默认 config 里的 `motion_dataset` 是相对路径，显式传入可以避免 decode backup BVH 时依赖当前工作目录。retrieval-only backup 默认会截断超长连续重复 RVQ tuple run，并把 `repeat_repairs` 记录到 `retrieval_validation.json`；这是 decoder 可运行性修复，不应当被解释为语义成功。
 
-长文本动作推荐使用分段生成，让每一段 motion 使用对应局部 caption，而不是每个 rolling chunk 都看同一个完整长文本。分段生成会把上一段末尾的 latent 作为下一段开头的上下文，从而保留动作连续性，同时显式告诉模型当前执行的是哪一段文本。默认 `auto` 会在检测到多段文本时走这条路径；如果没有显式传 `--segment-lengths` 或 `--segment-length`，脚本会把 `--max-length` 自动分配到各文本段：
+长文本动作推荐使用分段生成，让每一段 motion 使用对应局部 caption，而不是每个 rolling chunk 都看同一个完整长文本。分段生成会把上一段末尾的 latent 作为下一段开头的上下文，从而保留动作连续性，同时显式告诉模型当前执行的是哪一段文本。默认 `auto` 会在检测到多段文本时走这条路径；当前检测是精确按 `--segment-joiner` 字符串拆分，默认 joiner 是英文小写、两侧带空格的 `" then "`。如果 prompt 中没有这个精确字符串，`auto` 会退回 rolling；如果要按中文“然后”或其他分隔符拆分，需要显式传 `--segment-joiner`。如果没有显式传 `--segment-lengths` 或 `--segment-length`，脚本会把 `--max-length` 自动分配到各文本段：
 
 ```bash
 python Script/stage1/generate_long_motion.py \
@@ -941,7 +968,7 @@ Per-prompt frame counts:
 | walk_jump_dance | 1392 | 1392 | 1416 | 1416 |
 | sidestep_kick_turn | 864 | 864 | 408 | 456 |
 
-因此当前正式 Stage1 长文本生成应保留 `--generation-mode auto` 或显式 `--generation-mode segmented`，并继续使用 `" then "` 作为合成 captions 和 prompt suite 的分段 joiner。
+因此当前正式 Stage1 长文本生成应保留 `--generation-mode auto` 或显式 `--generation-mode segmented`，并继续使用精确的 `" then "` 作为合成 captions 和 prompt suite 的分段 joiner；prompt 文案不要混用 `Then`、`and then` 以外的分隔习惯，除非同步修改 `--segment-joiner` 并重新记录实验。
 
 ### 6.9 数据问题修复记录
 
@@ -1172,4 +1199,4 @@ Stage1 的旧 fixed dataset 工程链路已经完整跑通，但旧 finetuned ch
 
 当前推荐的 Stage1 engineering 结果是 2026-06-13 的 long-native 200 条、head-only 5 epoch run：200 条长序列 BVH 中 91 条通过 native retarget/filter，形成 73 train / 18 val sequences、278 train windows 和 66 val windows；val loss 从 8.980 降到 8.443。top-p baseline-vs-finetuned 对比中，平均长度从 1062 frames 提升到 1194 frames，早停率从 0.75 降到 0.50，root path 从 3.472 提升到 4.187；pose velocity/variance 从 14.052 / 141.194 增至 19.133 / 190.011，说明动作更长、更活跃，但仍有一定稳定性代价。视频/contact sheet 上暂未看到明显摔倒、骨架翻转或全身崩坏，`circle_crouch_stand` 改善最明显，`walk_jump_dance` 和 `sidestep_kick_turn` 仍基本没有变化。
 
-因此当前结论是：长 HumanML3D 合成可用；旧 hand-written HumanML3D-to-state cache 不适合正式结论；BVH-to-character native retarget 是目前真正 work 的主线；保守 head-only GPT 微调已经在 Stage1 工程指标和视频观感上比 baseline 好一点，但还不是论文级胜出。论文指标 FID/R-precision 仍缺 evaluator checkpoint/glove assets；MoConVQ BVH 到 HumanML3D 263-d feature 的近似 adapter 已有 smoke，但仍需要 calibration 后才能支撑论文级指标。
+因此当前结论是：长 HumanML3D 合成可用；旧 hand-written HumanML3D-to-state cache 不适合正式结论；BVH-to-character native retarget 是目前真正 work 的主线；保守 head-only GPT 微调已经在 Stage1 工程指标和视频观感上比 baseline 好一点，但还不是论文级胜出。论文指标 FID/R-precision 仍缺 evaluator checkpoint/glove assets；MoConVQ BVH 到 HumanML3D 263-d feature 的近似 adapter 已完成 smoke 和 20-sample roundtrip calibration，但该路线仍带有约 `0.08` joint MPJPE 的骨架适配误差，因此只能作为 approximate evaluator-adapter route 使用，不能替代原生 HumanML3D/SMPL evaluator 结论。
