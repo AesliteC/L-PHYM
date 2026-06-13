@@ -7851,6 +7851,17 @@ Checkpoint:
 /tmp/stage1_segment_aligned_bvh_native_200_head_seed13_5ep_20260614/checkpoint_epoch_5.pth
 ```
 
+Current metric-balanced checkpoint selection:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_seed13_5ep_20260614/checkpoint_epoch_3.pth
+```
+
+Epoch 5 has the lowest validation loss in this short run, but epoch 3 gives the
+best held-out Val8 approximate paper-metric balance.  This is a useful reminder
+that token-level validation loss is not sufficient for selecting long-rollout
+text-to-motion checkpoints.
+
 Training curve:
 
 | Epoch | Train loss | Val loss | Train acc | Val acc |
@@ -7862,8 +7873,9 @@ Training curve:
 | 4 | 13.1992 | 15.6747 | 0.0598 | 0.0713 |
 
 The loss is high because the segment-aligned cache is harder and smaller, but it
-decreases monotonically.  This checkpoint is the current recommended
-training/inference-consistent Stage1 model.
+decreases monotonically.  Epoch 5 is the lowest-loss checkpoint in this short
+training run; epoch 3 is currently selected for the report because it gives a
+better held-out Val8 approximate paper-metric balance.
 
 ### Four hand-written long-prompt suite
 
@@ -7964,9 +7976,9 @@ Result:
 Interpretation: the sampling change helps FID slightly but hurts duration and
 does not fix R-precision@1, so it is not the recommended setting.
 
-### Held-out Val8 long-caption suite
+### Held-out Val8 long-caption suite, epoch 5
 
-Because four hand-written prompts are very small and noisy, the same checkpoint
+Because four hand-written prompts are very small and noisy, checkpoint epoch 5
 was also evaluated on eight held-out long captions from the segment-aligned val
 split.
 
@@ -8021,14 +8033,78 @@ Visual audit:
 
 Interpretation:
 
-- This is currently the strongest Stage1 result: finetuned improves FID,
-  R-precision@1, matching score, average length, early-stop rate, and repetition
-  proxy on held-out long captions.
-- It is not a clean win on every paper metric cutoff because R-precision@2 and
-  R-precision@3 drop.
+- This epoch 5 run improves FID, R-precision@1, matching score, average length,
+  early-stop rate, and repetition proxy on held-out long captions.
+- It is not the best checkpoint selection for final reporting because
+  R-precision@2 and R-precision@3 drop substantially.
 - The evaluator route is approximate: generated MoConVQ BVHs are converted
   through a `base.bvh` to HumanML3D 22-joint adapter, and the T2M evaluator
   truncates long sequences to at most 196 frames at 20 FPS.
+
+### Held-out Val8 checkpoint selection, epoch 3
+
+The same Val8 prompt suite was rerun with `checkpoint_epoch_3.pth` while keeping
+the prompt list, seed, top-p sampling, segmented inference, progress
+conditioning, and baseline checkpoint fixed.
+
+Suite:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch3_val8_compare_20260614
+```
+
+Paper-metric summary:
+
+```text
+/tmp/stage1_t2m_paper_metrics_segment_aligned_head_epoch3_val8_20260614/summary.json
+```
+
+Engineering metrics:
+
+| Metric | Baseline | Finetuned epoch3 |
+|---|---:|---:|
+| avg frames | 1296 | 1308 |
+| early-stop rate | 0.375 | 0.25 |
+| avg root path | 2.2293 | 2.3737 |
+| avg pose velocity | 16.0732 | 16.0162 |
+| avg pose variance | 158.5108 | 166.1969 |
+| lag20 repeat fraction | 0.0064 | 0.0105 |
+
+Approximate T2M evaluator metrics:
+
+| Metric | Baseline | Finetuned epoch3 |
+|---|---:|---:|
+| FID lower is better | 18.1357 | 16.2093 |
+| R-precision@1 higher is better | 0.25 | 0.375 |
+| R-precision@2 higher is better | 0.625 | 0.625 |
+| R-precision@3 higher is better | 1.00 | 0.625 |
+| matching score lower is better | 4.3217 | 4.1888 |
+
+Video/contact-sheet artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch3_val8_compare_20260614/video/
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch3_val8_compare_20260614/contact_sheet.png
+```
+
+Visual audit:
+
+- The contact sheet again shows no blank frames, full-body inversion, or global
+  pose explosion.
+- `train_000077` remains the clearest visual improvement: the baseline ends near
+  the ground, while finetuned reaches a crouch/kneel state and returns to
+  standing.
+- Epoch 3 is visually more conservative than epoch 5.  It does not improve the
+  lag20 repetition proxy, but it avoids the epoch 5 drop in R-precision@2.
+
+Interpretation:
+
+- This is the current recommended Stage1 checkpoint selection for the report.
+- It improves approximate FID, R-precision@1, matching score, early-stop rate,
+  average length, and root path over baseline, while matching baseline
+  R-precision@2.
+- It still does not beat baseline on R-precision@3, so the claim remains
+  partial rather than a full paper-metric victory.
 
 ### Paper evaluator readiness
 
@@ -8086,8 +8162,9 @@ The current best Stage1 claim is:
 Segment-aligned HumanML3D -> BVH -> MoConVQ-native retarget + head-only GPT
 fine-tuning gives a reproducible partial improvement over the MoConVQ baseline
 on long multi-stage prompts.  On the held-out Val8 suite it improves approximate
-FID, R-precision@1, matching score, early-stop rate, average length, and the
-lag20 repetition proxy.  It does not yet improve every R-precision cutoff, so
-the final report should present it as a meaningful but incomplete Stage1 result,
-not as a full paper-metric victory.
+FID, R-precision@1, matching score, early-stop rate, average length, and root
+path, and matches baseline R-precision@2.  It does not yet improve every
+R-precision cutoff, especially R-precision@3, so the final report should present
+it as a meaningful but incomplete Stage1 result, not as a full paper-metric
+victory.
 ```
