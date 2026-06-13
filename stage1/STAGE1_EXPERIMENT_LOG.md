@@ -7107,3 +7107,166 @@ or explicitly:
 ```
 
 for the current synthetic long-caption convention.
+
+## 2026-06-13 BVH-to-HumanML3D feature adapter smoke
+
+### Motivation
+
+The paper metrics used by MoConVQ for Text2Motion are FID and R-precision on
+HumanML3D/SMPL-style motion features.  T2M-GPT's evaluator confirms that the
+T2M setting uses:
+
+```text
+dim_pose = 263
+motion input = HumanML3D new_joint_vecs
+motion encoder input = motions[..., :-4]
+```
+
+Therefore generated MoConVQ BVH files cannot be passed directly to the
+HumanML3D evaluator.  They first need a BVH/character-motion to HumanML3D
+263-d feature adapter.
+
+### Added adapter
+
+Added:
+
+```text
+Script/stage1/bvh_to_humanml3d_features.py
+tests/test_stage1_bvh_to_humanml3d_features.py
+```
+
+The adapter path is:
+
+```text
+generated MoConVQ/base.bvh
+  -> parse BVH + forward kinematics
+  -> resample to 20 FPS
+  -> map BVH nodes to approximate HumanML3D 22 joints
+  -> call HumanML3D scripts/generate_motion_representation.py::process_file()
+  -> write 263-d new_joint_vecs .npy
+```
+
+Mapping note:
+
+```text
+Directly corresponding BVH nodes are copied into HumanML3D joints by name.
+HumanML3D spine/neck/head intermediate joints 9, 12, and 15 are approximated
+from the MoConVQ torso_head joint and its end site.
+```
+
+Because this is a skeleton approximation, it is not yet a paper-level metric
+adapter by itself.  It removes the previous hard blocker, but it still needs
+calibration against known HumanML3D examples or another trusted BVH/SMPL export.
+
+### Validation
+
+Commands:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/bvh_to_humanml3d_features.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_bvh_to_humanml3d_features -v
+```
+
+Result:
+
+```text
+3 tests passed
+```
+
+Real generated BVH smoke:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/bvh_to_humanml3d_features.py \
+  /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/bvh/circle_crouch_stand__finetuned_top_p.bvh \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --output-dir /tmp/stage1_bvh_to_humanml3d_smoke \
+  --save-joints \
+  --summary /tmp/stage1_bvh_to_humanml3d_smoke/summary.json
+```
+
+Smoke output:
+
+```text
+input BVH:
+  /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/bvh/circle_crouch_stand__finetuned_top_p.bvh
+
+source frames:    1656
+source fps:       120.0048
+target fps:       20
+resampled joints: 276 frames
+feature output:
+  /tmp/stage1_bvh_to_humanml3d_smoke/new_joint_vecs/circle_crouch_stand__finetuned_top_p.npy
+feature shape:
+  275 x 263
+```
+
+### Readiness update
+
+I updated `check_evaluation_readiness.py` so the paper-metric gate now checks:
+
+```text
+1. HumanML3D/T2M evaluator source/assets
+2. Stage1 BVH-to-HumanML3D feature adapter
+```
+
+Validation:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_evaluation_readiness \
+  tests.test_stage1_bvh_to_humanml3d_features \
+  -v
+```
+
+Result:
+
+```text
+7 tests passed
+```
+
+Current local readiness:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/check_evaluation_readiness.py \
+  --repo-root . \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --output /tmp/stage1_eval_readiness_after_adapter.json
+```
+
+Result:
+
+```text
+paper_metrics_ready = false
+
+missing:
+  - HumanML3D text-motion evaluator source files
+  - pretrained HumanML3D evaluator / motion-feature extractor checkpoints
+
+bvh_to_humanml3d_adapter:
+  exists = true
+  status = available_approximate_adapter_needs_metric_calibration
+```
+
+Local `moconvq` environment check:
+
+```text
+gdown module = missing
+```
+
+So the immediate remaining paper-metric blockers are:
+
+```text
+1. install/use gdown or otherwise obtain T2M evaluator assets;
+2. download/copy:
+   - checkpoints/t2m/text_mot_match/model/finest.tar
+   - checkpoints/t2m/text_mot_match/opt.txt
+   - glove/our_vab_data.npy
+   - glove/our_vab_words.pkl
+3. calibrate the approximate BVH-to-HumanML3D feature adapter before using
+   FID/R-precision as final paper-level claims.
+```

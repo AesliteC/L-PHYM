@@ -809,7 +809,38 @@ glove/our_vab_data.npy
 glove/our_vab_words.pkl
 ```
 
-即使这些 evaluator assets 补齐，还需要把 MoConVQ 生成的 BVH/character motion 转回 HumanML3D 263-d motion feature 体系，FID/R-precision 才和论文指标可比。
+当前已经新增一个 MoConVQ BVH 到 HumanML3D feature 的近似 adapter：
+
+```text
+Script/stage1/bvh_to_humanml3d_features.py
+tests/test_stage1_bvh_to_humanml3d_features.py
+```
+
+它的路径是：
+
+```text
+generated MoConVQ/base.bvh
+  -> BVH forward kinematics
+  -> approximate MoConVQ 20-body positions to HumanML3D 22-joint positions
+  -> HumanML3D scripts/generate_motion_representation.py::process_file()
+  -> 263-d new_joint_vecs feature
+```
+
+Smoke test 已能把当前 best run 的 generated BVH 转成 263-d feature：
+
+```text
+input:
+  /tmp/stage1_long_fixed_bvh_native_200_head_epoch5_compare_20260613/bvh/circle_crouch_stand__finetuned_top_p.bvh
+
+output:
+  /tmp/stage1_bvh_to_humanml3d_smoke/new_joint_vecs/circle_crouch_stand__finetuned_top_p.npy
+
+source frames:    1656 at ~120 FPS
+resampled joints: 276 at 20 FPS
+feature shape:    275 x 263
+```
+
+这个 adapter 消除了“完全没有 BVH -> HumanML3D feature 转换”的硬缺口，但它仍然是骨架近似：直接对应的关节按 BVH node 名复制，HumanML3D 的 spine/neck/head 中间关节由 MoConVQ torso/head chain 插值得到。因此在 evaluator assets 补齐后，还必须先校准这个 adapter，再把 FID/R-precision 写成论文级指标。
 
 为了避免每次实验只比较单一路线，当前推荐把最终 Stage1 对比实验收敛到统一 suite：
 
@@ -1113,4 +1144,4 @@ Stage1 的旧 fixed dataset 工程链路已经完整跑通，但旧 finetuned ch
 
 当前推荐的 Stage1 engineering 结果是 2026-06-13 的 long-native 200 条、head-only 5 epoch run：200 条长序列 BVH 中 91 条通过 native retarget/filter，形成 73 train / 18 val sequences、278 train windows 和 66 val windows；val loss 从 8.980 降到 8.443。top-p baseline-vs-finetuned 对比中，平均长度从 1062 frames 提升到 1194 frames，早停率从 0.75 降到 0.50，root path 从 3.472 提升到 4.187；pose velocity/variance 从 14.052 / 141.194 增至 19.133 / 190.011，说明动作更长、更活跃，但仍有一定稳定性代价。视频/contact sheet 上暂未看到明显摔倒、骨架翻转或全身崩坏，`circle_crouch_stand` 改善最明显，`walk_jump_dance` 和 `sidestep_kick_turn` 仍基本没有变化。
 
-因此当前结论是：长 HumanML3D 合成可用；旧 hand-written HumanML3D-to-state cache 不适合正式结论；BVH-to-character native retarget 是目前真正 work 的主线；保守 head-only GPT 微调已经在 Stage1 工程指标和视频观感上比 baseline 好一点，但还不是论文级胜出。论文指标 FID/R-precision 仍缺 evaluator checkpoint/glove assets，以及 MoConVQ BVH 到 HumanML3D 263-d feature 的 adapter。
+因此当前结论是：长 HumanML3D 合成可用；旧 hand-written HumanML3D-to-state cache 不适合正式结论；BVH-to-character native retarget 是目前真正 work 的主线；保守 head-only GPT 微调已经在 Stage1 工程指标和视频观感上比 baseline 好一点，但还不是论文级胜出。论文指标 FID/R-precision 仍缺 evaluator checkpoint/glove assets；MoConVQ BVH 到 HumanML3D 263-d feature 的近似 adapter 已有 smoke，但仍需要 calibration 后才能支撑论文级指标。

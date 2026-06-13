@@ -34,6 +34,8 @@ T2M_REQUIRED_ASSETS = (
     "glove/our_vab_words.pkl",
 )
 
+STAGE1_BVH_TO_HUMANML3D_ADAPTER = "Script/stage1/bvh_to_humanml3d_features.py"
+
 
 def _exists_any(root: Path, patterns: tuple[str, ...]) -> list[str]:
     matches: list[str] = []
@@ -83,14 +85,19 @@ def check_evaluation_readiness(
     comparison_script = repo_root / "Script/stage1/run_text_gpt_comparison.py"
     token_script = repo_root / "Script/stage1/diagnose_token_distribution.py"
     observation_script = repo_root / "Script/stage1/diagnose_observation_distribution.py"
+    adapter_script = repo_root / STAGE1_BVH_TO_HUMANML3D_ADAPTER
 
     t2m_ready = not missing_t2m_sources and not missing_t2m_assets
-    paper_ready = bool(t2m_ready or (evaluator_sources and evaluator_checkpoints))
+    legacy_evaluator_ready = bool(evaluator_sources and evaluator_checkpoints)
+    adapter_ready = adapter_script.exists()
+    paper_ready = bool((t2m_ready or legacy_evaluator_ready) and adapter_ready)
     missing = []
     if not evaluator_sources and missing_t2m_sources:
         missing.append("HumanML3D text-motion evaluator source files")
     if not evaluator_checkpoints and missing_t2m_assets:
         missing.append("pretrained HumanML3D evaluator / motion-feature extractor checkpoints")
+    if not adapter_ready:
+        missing.append("MoConVQ BVH/character motion to HumanML3D 263-d feature adapter")
 
     return {
         "paper_metrics": list(PAPER_METRICS),
@@ -110,9 +117,21 @@ def check_evaluation_readiness(
             "detected_assets": detected_t2m_assets,
             "missing_assets": missing_t2m_assets,
             "ready": t2m_ready,
-            "remaining_adapter_gap": (
-                "Even with evaluator assets, generated MoConVQ BVH/character motion must be converted "
-                "to HumanML3D 263-d motion features before FID/R-precision are comparable."
+            "adapter_required": STAGE1_BVH_TO_HUMANML3D_ADAPTER,
+        },
+        "bvh_to_humanml3d_adapter": {
+            "path": str(adapter_script),
+            "exists": adapter_ready,
+            "status": (
+                "available_approximate_adapter_needs_metric_calibration"
+                if adapter_ready
+                else "missing"
+            ),
+            "notes": (
+                "The adapter converts generated MoConVQ/base.bvh files through BVH FK, "
+                "a MoConVQ-to-HumanML3D 22-joint approximation, and HumanML3D process_file() "
+                "to produce 263-d features. It removes the previous hard blocker, but the "
+                "skeleton approximation still needs calibration before paper-level claims."
             ),
         },
         "engineering_metrics": list(ENGINEERING_METRICS),
@@ -136,9 +155,10 @@ def check_evaluation_readiness(
         },
         "recommendation": (
             "Use engineering diagnostics only as intermediate checks; do not claim paper-level "
-            "improvement over baseline until FID/R-precision evaluator assets are available."
+            "improvement over baseline until FID/R-precision evaluator assets are available "
+            "and the BVH-to-HumanML3D adapter has been calibrated."
             if not paper_ready
-            else "Paper-level FID/R-precision assets appear available; integrate them before final comparison."
+            else "Paper-level evaluator assets and a BVH-to-HumanML3D feature adapter appear available; run and calibrate FID/R-precision before final comparison."
         ),
     }
 
