@@ -451,6 +451,9 @@ python -m unittest \
 4. **token-level 指标不能完全代表视觉质量。**
    validation loss 和 token accuracy 能说明模型在训练分布上学习到 RVQ token 预测，但还需要结合 BVH/MP4 定性观察，以及动作重复、动作顺序、root drift、foot sliding 等指标做评估。
 
+5. **当前本地 HumanML3D 是 processed corpus ready，但不是 native BVH source ready。**
+   `/home/chenjie/cc/robotics/HumanML3D` 下的 `all.txt/texts/new_joints/new_joint_vecs` 已对齐，可以用于 catalog、长 caption 合成和诊断；但当前没有 `pose_data/`、标准 AMASS motion `.npz` 或大规模 BVH exports。因此首选的 MoConVQ 原生 `MotionDataSet.add_bvh_with_character()` 数据路线还需要先恢复 source motion 或导出 BVH。
+
 ## 后续工作
 
 Stage1 后续处理以下方向：
@@ -468,7 +471,9 @@ Stage1 后续处理以下方向：
 
 ```text
 Script/stage1/synthesize_long_humanml3d.py
+Script/stage1/check_stage1_data_readiness.py
 Script/stage1/build_real_moconvq_gpt_cache.py
+Script/stage1/build_bvh_character_gpt_cache.py
 Script/stage1/train_real_text_gpt.py
 Script/stage1/generate_long_motion.py
 Script/stage1/run_stage1_model_suite.py

@@ -4,9 +4,20 @@ from pathlib import Path
 from Script.stage1.humanml3d import build_long_horizon_manifest, load_humanml3d_catalog
 
 
+def _humanml_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "HumanML3D" / "HumanML3D"
+        if (candidate / "all.txt").exists():
+            return candidate
+    fallback = Path("/home/chenjie/cc/robotics/HumanML3D/HumanML3D")
+    if (fallback / "all.txt").exists():
+        return fallback
+    raise FileNotFoundError("HumanML3D/HumanML3D/all.txt was not found")
+
+
 class HumanML3DStage1Tests(unittest.TestCase):
     def test_catalog_reads_canonical_split_counts(self):
-        root = Path(__file__).resolve().parents[2] / "HumanML3D" / "HumanML3D"
+        root = _humanml_root()
         catalog = load_humanml3d_catalog(root)
 
         self.assertEqual(len(catalog.all_ids), 29228)
@@ -23,7 +34,7 @@ class HumanML3DStage1Tests(unittest.TestCase):
         self.assertIsNotNone(sample.source_path)
 
     def test_build_long_horizon_manifest_is_deterministic_and_structured(self):
-        root = Path(__file__).resolve().parents[2] / "HumanML3D" / "HumanML3D"
+        root = _humanml_root()
         catalog = load_humanml3d_catalog(root)
         manifest = build_long_horizon_manifest(
             catalog,
@@ -47,7 +58,7 @@ class HumanML3DStage1Tests(unittest.TestCase):
         import tempfile
         import json
 
-        root = Path(__file__).resolve().parents[2] / "HumanML3D" / "HumanML3D"
+        root = _humanml_root()
         catalog = load_humanml3d_catalog(root)
         manifest = build_long_horizon_manifest(
             catalog,

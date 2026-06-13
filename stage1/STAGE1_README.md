@@ -418,9 +418,19 @@ HumanML3D 263-d vector -> heuristic 768-d latent -> RVQ quantization -> GPT smok
 
 ```text
 Script/stage1/synthesize_long_humanml3d.py
+Script/stage1/check_stage1_data_readiness.py
 Script/stage1/build_real_moconvq_gpt_cache.py
+Script/stage1/build_bvh_character_gpt_cache.py
 Script/stage1/train_real_text_gpt.py
 ```
+
+当前 `/home/chenjie/cc/robotics/HumanML3D` 的 canonical processed payload
+已经可用：`all.txt` 中的 29228 个样本均有对应的 `texts/new_joints/new_joint_vecs`。
+但当前本地没有 `pose_data/`、标准 AMASS motion `.npz` 或大规模 BVH exports，
+所以首选的 MoConVQ 原生 `MotionDataSet.add_bvh_with_character()` 路线还不能直接
+在 HumanML3D 规模上构建 cache。先运行 `check_stage1_data_readiness.py` 确认
+source motion/BVH 状态，再决定是恢复 AMASS/HumanML3D source motion，还是实现并验证
+`new_joints` 到 MoConVQ-compatible BVH 的导出。
 
 ## 6. 还需要完成的工作
 

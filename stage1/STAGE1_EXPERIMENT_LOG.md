@@ -3524,3 +3524,142 @@ Result:
 py_compile passed
 47 tests passed, 1 skipped
 ```
+
+## 2026-06-13: Stage1 HumanML3D/source-motion readiness audit
+
+### Why this audit was added
+
+The Stage1 mainline should remain:
+
+```text
+HumanML3D / AMASS source motion
+-> restore/export BVH or compatible source motion
+-> MotionDataSet.add_bvh_with_character()
+-> MoConVQ observation/latent/RVQ cache
+-> text-conditioned MoConGPT fine-tuning
+```
+
+To keep that distinction reproducible, I added a data-readiness checker:
+
+```text
+Script/stage1/check_stage1_data_readiness.py
+tests/test_stage1_data_readiness.py
+```
+
+The checker separates three states:
+
+```text
+1. canonical processed HumanML3D payload is available;
+2. original HumanML3D/AMASS source motion or BVH exports are available;
+3. MoConVQ-native BVH-to-character cache tools are available.
+```
+
+This matters because the processed HumanML3D payload (`new_joints`,
+`new_joint_vecs`, `texts`) can be complete while the source motion needed for
+native BVH retarget is still missing.
+
+### Command
+
+Executed from:
+
+```text
+/home/chenjie/cc/robotics/MoConVQ-main/stage1
+```
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/check_stage1_data_readiness.py \
+  --repo-root . \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --output stage1_artifacts/diagnostics/data_readiness_20260613_main.json
+```
+
+### Result
+
+Current local dataset state:
+
+```text
+processed_corpus.ready = true
+processed_corpus.indexed_payload_complete = true
+all.txt = 29228
+texts = 29232
+new_joints = 29228
+new_joint_vecs = 29228
+train = 23384
+val = 1460
+test = 4384
+train_val = 24844
+```
+
+The `texts` directory has four extra text files, but every sample in
+`all.txt` has a matching `texts/*.txt`, `new_joints/*.npy`, and
+`new_joint_vecs/*.npy`.  This is therefore a complete canonical processed
+HumanML3D payload under the `all.txt` index.
+
+Current source-motion state:
+
+```text
+index.csv rows = 14616
+existing index source files = 0
+missing index source files = 14616
+BVH files under /home/chenjie/cc/robotics/HumanML3D = 0
+NPZ files under /home/chenjie/cc/robotics/HumanML3D = 6
+standard AMASS motion NPZ files detected = 0
+source_motion_available_for_export = false
+native_bvh_cache_ready = false
+stage1_mainline_ready = false
+```
+
+Representative missing source paths from `index.csv`:
+
+```text
+/home/chenjie/cc/robotics/HumanML3D/pose_data/KIT/3/kick_high_left02_poses.npy
+/home/chenjie/cc/robotics/HumanML3D/pose_data/CMU/80/80_63_poses.npy
+/home/chenjie/cc/robotics/HumanML3D/pose_data/Eyes_Japan_Dataset/hamada/pose-06-hangon-hamada_poses.npy
+```
+
+Available native-retarget tools:
+
+```text
+Script/stage1/build_bvh_character_gpt_cache.py exists
+Script/stage1/diagnose_bvh_character_retarget.py exists
+```
+
+Interpretation:
+
+- HumanML3D itself is not abandoned and the processed corpus is usable for
+  cataloging, long-caption synthesis, and diagnostics.
+- The current local checkout still lacks the source motion needed to run the
+  preferred MoConVQ-native BVH retarget route at HumanML3D scale.
+- The next mainline data step is to restore/export AMASS/HumanML3D source motion
+  to BVH, or to implement a validated `new_joints` to MoConVQ-compatible BVH
+  exporter and then run `build_bvh_character_gpt_cache.py`.
+- The current hand-written HumanML3D-to-MoConVQ observation/cache route remains
+  useful as a diagnostic baseline, but should not be treated as the final
+  Stage1 data route unless its retarget quality is repaired and validated.
+
+### Verification
+
+Commands run with the `moconvq` conda environment:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/check_stage1_data_readiness.py \
+  tests/test_stage1_data_readiness.py \
+  tests/test_stage1_humanml3d.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_data_readiness \
+  tests.test_stage1_evaluation_readiness \
+  tests.test_stage1_humanml3d \
+  -v
+```
+
+Result:
+
+```text
+py_compile passed
+7 tests passed
+```
