@@ -150,6 +150,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--observation-h5", required=True)
     parser.add_argument("--summary", default="")
+    parser.add_argument("--quiet", action="store_true", help="Print only summary path and core cache counts.")
     args = parser.parse_args(argv)
 
     raw_specs = args.bvh + args.motion
@@ -194,7 +195,21 @@ def main(argv: Iterable[str] | None = None) -> None:
         summary_path = Path(args.summary)
         summary_path.parent.mkdir(parents=True, exist_ok=True)
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    print(json.dumps(summary, indent=2))
+    if args.quiet:
+        print(
+            json.dumps(
+                {
+                    "output": str(output),
+                    "summary": args.summary,
+                    "windows": summary["windows"],
+                    "valid_tokens": summary["valid_tokens"],
+                    "unique_sequences": summary["unique_sequences"],
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":

@@ -175,6 +175,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--lags", default="5,10,20,30")
     parser.add_argument("--expected-min-frames", type=int, default=None)
     parser.add_argument("--output", default="")
+    parser.add_argument("--quiet", action="store_true", help="Print only a compact run summary to stdout.")
     args = parser.parse_args(argv)
 
     lags = tuple(int(item) for item in args.lags.split(",") if item.strip())
@@ -189,7 +190,20 @@ def main(argv: Iterable[str] | None = None) -> None:
         output = Path(args.output)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(text, encoding="utf-8")
-    print(text)
+    if args.quiet:
+        rows = summary.get("rows", [])
+        print(
+            json.dumps(
+                {
+                    "output": args.output,
+                    "rows": len(rows),
+                    "early_stop": sum(1 for row in rows if row.get("early_stop")),
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(text)
 
 
 if __name__ == "__main__":

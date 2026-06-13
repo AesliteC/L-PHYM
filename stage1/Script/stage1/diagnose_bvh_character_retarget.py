@@ -194,6 +194,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--native-h5", default="")
     parser.add_argument("--native-observation-key", default="walk1_subject5/observation")
     parser.add_argument("--output-json", default="")
+    parser.add_argument("--quiet", action="store_true", help="Print only a compact run summary to stdout.")
     args = parser.parse_args(argv)
 
     agent = build_loaded_moconvq_agent(
@@ -216,7 +217,27 @@ def main(argv: Iterable[str] | None = None) -> None:
         output = Path(args.output_json)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(json.dumps(_compact_payload(payload), indent=2))
+    if args.quiet:
+        summary = payload["summaries"][0]  # type: ignore[index]
+        z = summary.get("observation_z", {}).get("aggregate_abs_z", {})  # type: ignore[union-attr]
+        print(
+            json.dumps(
+                {
+                    "output_json": args.output_json,
+                    "paths": len(args.bvh_files),
+                    "state_shape": summary.get("state_shape"),
+                    "observation_shape": summary.get("observation_shape"),
+                    "token_shape": summary.get("shape"),
+                    "p99_abs_z": z.get("p99"),
+                    "max_abs_z": z.get("max"),
+                    "per_file": len(payload.get("per_file", [])),  # type: ignore[arg-type]
+                    "comparisons": len(payload.get("comparisons", [])),  # type: ignore[arg-type]
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(json.dumps(_compact_payload(payload), indent=2))
 
 
 if __name__ == "__main__":

@@ -453,14 +453,17 @@ observation z-score、短序列、以及低 z-score 但 depth0 token collapse。
 5 条样本 cache 有 18 个窗口、1440 个有效 token，depth0 top fraction 约 `0.039`，
 并通过 head-only 训练 smoke。该结果只证明筛选闭环可跑，不是最终训练集规模或模型质量结论。
 
-后续 50/100 条 train split 诊断已经验证相同闭环可以扩展到更大的
+后续 50/100/500 条 train split 诊断已经验证相同闭环可以扩展到更大的
 processed-HumanML3D 样本批次。batch50 临时阈值接受 10 条、拒绝 40 条；
 accepted-only cache 有 39 个窗口、3120 个有效 token，depth0 top fraction 约
 `0.041`。batch100 临时阈值接受 16 条、拒绝 84 条；accepted-only cache 有 61 个
 窗口、4880 个有效 token，depth0 top fraction 约 `0.023`，并能进入
-`train_real_text_gpt.py --train-scope head --smoke`。主要拒绝原因是短序列、
-depth0 token collapse 和少量 retarget 后 observation z-score 异常。这说明
-HumanML3D 主线没有被放弃，但正式训练不能再盲目使用早期 hand-written retarget cache；
+`train_real_text_gpt.py --train-scope head --smoke`。batch500 临时阈值接受 90 条、
+拒绝 410 条；accepted-only cache 有 90 个 50-token 窗口、15804 个有效 token、
+90 个唯一序列，depth0 top fraction 约 `0.038`，并通过 1 epoch head-only 训练
+路径检查。主要拒绝原因是短序列、depth0 token collapse、tokens 少和少量 retarget
+后 observation z-score 异常。这说明 HumanML3D 主线没有被放弃，但正式训练不能再
+盲目使用早期 hand-written retarget cache；
 `make_bvh_contact_sheet.py` 可把 quality summary 中的 accepted/rejected BVH 抽帧成
 静态审计图，便于在正式训练前检查是否存在倒置、爆肢、明显脚滑或错误拒绝。
 当前更可靠的主线是：
@@ -952,4 +955,4 @@ stage1_artifacts/checkpoints/fixed_dataset_stage1_20260529_135401/best_val.pth
 
 ## 7. 当前状态一句话总结
 
-Stage1 的旧 fixed dataset 工程链路已经完整跑通，但旧 finetuned checkpoint 已判定无效：它改善了早停，却因训练/推理 latent 空间不一致、全量微调覆盖先验、以及 HumanML3D retarget/cache 质量不足导致视频质量差。当前代码已修复训练上下文 latent 重建，并把 HumanML3D 主线推进到 `joints_ik` BVH export -> MoConVQ-native character retarget -> per-file quality filter -> accepted-only GPT cache；batch50 已证明该闭环可复现但规模仍小。下一步应扩大 accepted-only train/val cache、渲染筛选样本做人工检查，再重新训练保守 `--train-scope base_head` 或 `temporal_base_head` 版本并和 baseline 重新生成 BVH/MP4 对比。
+Stage1 的旧 fixed dataset 工程链路已经完整跑通，但旧 finetuned checkpoint 已判定无效：它改善了早停，却因训练/推理 latent 空间不一致、全量微调覆盖先验、以及 HumanML3D retarget/cache 质量不足导致视频质量差。当前代码已修复训练上下文 latent 重建，并把 HumanML3D 主线推进到 `joints_ik` BVH export -> MoConVQ-native character retarget -> per-file quality filter -> accepted-only GPT cache；batch500 已产出 90 条 accepted 样本和可训练 cache，证明该闭环可以扩展到接近保守训练的最低数据规模。下一步应做 train/val accepted-only 划分、渲染筛选样本 MP4 做人工检查，再重新训练保守 `--train-scope base_head` 或 `temporal_base_head` 版本并和 baseline 重新生成 BVH/MP4 对比。

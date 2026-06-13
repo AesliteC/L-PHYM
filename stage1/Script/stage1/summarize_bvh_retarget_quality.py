@@ -226,6 +226,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--min-depth0-unique", type=int, default=16)
     parser.add_argument("--output-json", default="")
     parser.add_argument("--output-csv", default="")
+    parser.add_argument("--quiet", action="store_true", help="Print only counts and output paths to stdout.")
     args = parser.parse_args(argv)
 
     payload = summarize_retarget_quality(
@@ -247,7 +248,19 @@ def main(argv: Iterable[str] | None = None) -> None:
         output.write_text(text, encoding="utf-8")
     if args.output_csv:
         _write_csv(Path(args.output_csv), payload["rows"])  # type: ignore[arg-type]
-    print(text)
+    if args.quiet:
+        print(
+            json.dumps(
+                {
+                    "output_json": args.output_json,
+                    "output_csv": args.output_csv,
+                    "counts": payload["counts"],
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(text)
 
 
 if __name__ == "__main__":

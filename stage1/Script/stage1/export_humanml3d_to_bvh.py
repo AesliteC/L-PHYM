@@ -387,6 +387,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--rotation-source", choices=ROTATION_SOURCE_CHOICES, default="joints_ik")
     parser.add_argument("--no-unwrap-euler", action="store_true")
     parser.add_argument("--summary", default="")
+    parser.add_argument("--quiet", action="store_true", help="Print only a compact run summary to stdout.")
     args = parser.parse_args(argv)
 
     humanml_root = Path(args.humanml_root)
@@ -443,7 +444,20 @@ def main(argv: Iterable[str] | None = None) -> None:
         summary = Path(args.summary)
         summary.parent.mkdir(parents=True, exist_ok=True)
         summary.write_text(text, encoding="utf-8")
-    print(text)
+    if args.quiet:
+        print(
+            json.dumps(
+                {
+                    "summary": args.summary,
+                    "exports": len(summaries),
+                    "output_dir": str(output_dir),
+                    "rotation_source": args.rotation_source,
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(text)
 
 
 if __name__ == "__main__":

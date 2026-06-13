@@ -157,6 +157,7 @@ def main(argv: Iterable[str] | None = None) -> None:
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--rvq-depth", type=int, default=4)
     parser.add_argument("--output-json", default="")
+    parser.add_argument("--quiet", action="store_true", help="Print only compact token distribution summaries.")
     args = parser.parse_args(argv)
 
     summaries: list[dict[str, object]] = []
@@ -194,7 +195,36 @@ def main(argv: Iterable[str] | None = None) -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
-    print(json.dumps({"summaries": [compact_stats(x) for x in summaries], "comparisons": comparisons}, indent=2))
+    compact = {"summaries": [compact_stats(x) for x in summaries], "comparisons": comparisons}
+    if args.quiet:
+        print(
+            json.dumps(
+                {
+                    "output_json": args.output_json,
+                    "summaries": [
+                        {
+                            "kind": summary["kind"],
+                            "path": summary.get("path"),
+                            "shape": summary.get("shape"),
+                            "depths": [
+                                {
+                                    "depth": row["depth"],
+                                    "tokens": row["tokens"],
+                                    "unique": row["unique"],
+                                    "top_frac": (row.get("top_fracs") or [None])[0],
+                                }
+                                for row in summary["stats"]  # type: ignore[index]
+                            ],
+                        }
+                        for summary in summaries
+                    ],
+                    "comparisons": len(comparisons),
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(json.dumps(compact, indent=2))
 
 
 if __name__ == "__main__":

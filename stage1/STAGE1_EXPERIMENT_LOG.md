@@ -5107,3 +5107,348 @@ oversample train split to collect roughly 100 accepted clips
 ```
 
 or recover a more native HumanML3D/AMASS BVH/source-motion route if available.
+
+## 2026-06-13: Batch500 HumanML3D joints-IK BVH scaling check
+
+### Purpose
+
+After batch100, the accepted yield was still too small for any honest
+fine-tuning claim.  This run scaled the same processed-HumanML3D bridge to 500
+train split samples to check whether simple oversampling can produce a useful
+accepted-only MoConGPT cache before changing the retarget algorithm again.
+
+This is still the HumanML3D main route, not an LLM in-context run.  No external
+or local LLM response was used in this experiment.
+
+### Commands
+
+Export processed HumanML3D `new_joints/new_joint_vecs` to MoConVQ-template BVH:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/export_humanml3d_to_bvh.py \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --split train \
+  --limit 500 \
+  --seed 13 \
+  --output-dir stage1_artifacts/humanml_bvh_export_ik_batch500_20260613 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/export_summary.json \
+  --quiet
+```
+
+Result:
+
+```text
+exports = 500
+rotation_source = joints_ik
+elapsed_sec = 202.93
+frames min/max/avg = 19 / 199 / 141.422
+samples shorter than 120 frames = 205
+```
+
+BVH engineering metrics:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/evaluate_bvh_metrics.py \
+  stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/*.bvh \
+  --expected-min-frames 120 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/export_bvh_metrics.json \
+  --quiet
+```
+
+Result:
+
+```text
+rows = 500
+early_stop = 205
+elapsed_sec = 1.95
+```
+
+MoConVQ-native character retarget diagnostic:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/diagnose_bvh_character_retarget.py \
+  stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/*.bvh \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --native-h5 /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --native-observation-key walk1_subject5/observation \
+  --fps 20 \
+  --per-file \
+  --output-json stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/native_retarget_diagnostic.json \
+  --quiet
+```
+
+The first sandboxed attempt failed with the known MPI/socket initialization
+error:
+
+```text
+unable to create a socket, Operation not permitted
+```
+
+The same command succeeded after rerunning with escalated permissions.
+
+Aggregate retarget result:
+
+```text
+state_shape = [70711, 20, 13]
+observation_shape = [70711, 323]
+RVQ token shape = [17677, 4]
+observation |z| mean = 0.696808
+p50 = 0.362517
+p90 = 1.622412
+p95 = 2.411780
+p99 = 5.045906
+max = 68.327934
+frac_gt_3 = 0.032125
+frac_gt_5 = 0.010195
+frac_gt_10 = 0.002717
+elapsed_sec = 185.80
+```
+
+Token distribution compared to native `simple_motion_data.h5`:
+
+| depth | exported unique | native unique | JS divergence bits | exported entropy | native entropy |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 0 | 494 | 139 | 0.725128 | 7.948797 | 5.981861 |
+| 1 | 510 | 366 | 0.296112 | 8.542718 | 8.072053 |
+| 2 | 511 | 412 | 0.239919 | 8.532781 | 8.378403 |
+| 3 | 508 | 418 | 0.252044 | 8.272264 | 8.374331 |
+
+Compared with batch100, batch500 has more source diversity and better JS
+divergence at depths 1-3, but depth0 JS remains high and max observation
+z-score is still large.  Per-file filtering is still required.
+
+### Quality filtering
+
+Default preliminary thresholds were unchanged:
+
+```text
+min_frames = 120
+min_tokens = 20
+max_p99_abs_z = 8.0
+max_max_abs_z = 50.0
+max_frac_gt_5 = 0.05
+max_depth0_top_frac = 0.25
+min_depth0_unique = 16
+```
+
+Command:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/summarize_bvh_retarget_quality.py \
+  --retarget-json stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/native_retarget_diagnostic.json \
+  --bvh-metrics-json stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/export_bvh_metrics.json \
+  --export-summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/export_summary.json \
+  --output-json stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_summary.json \
+  --output-csv stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_summary.csv \
+  --quiet
+```
+
+Result:
+
+```text
+total = 500
+accepted = 90
+rejected = 410
+accepted rate = 18%
+elapsed_sec = 0.36
+accepted frames min/max/avg = 120 / 199 / 177.733
+accepted tokens min/max/avg = 30 / 49 / 43.900
+```
+
+Reject-reason counts:
+
+| reason | count |
+| --- | ---: |
+| depth0_unique<16 | 297 |
+| depth0_top_frac>0.25 | 252 |
+| frames<120 | 205 |
+| tokens<20 | 84 |
+| p99_abs_z>8 | 72 |
+| max_abs_z>50 | 47 |
+| frac_gt_5>0.05 | 9 |
+
+The accepted rate is similar to batch50/batch100.  The larger run confirms
+that simple oversampling can produce roughly 100 accepted processed-HumanML3D
+clips, but the filter is still conservative and loses many samples to short
+clips and depth0 token collapse.
+
+### Filtered GPT cache
+
+Build command:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_summary.json \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 50 \
+  --window-stride 25 \
+  --rvq-depth 4 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_filtered.pt \
+  --observation-h5 stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/observations_filtered.h5 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_filtered_summary.json \
+  --quiet
+```
+
+The first sandboxed attempt failed with the same MPI/socket error and the
+rerun with escalated permissions succeeded:
+
+```text
+windows = 90
+latents_shape = [90, 50, 768]
+indices_shape = [90, 50, 4]
+text_features_shape = [90, 256, 1024]
+valid_tokens = 15804
+index range = 0..511
+unique_sequences = 90
+elapsed_sec = 31.58
+```
+
+Filtered cache token distribution:
+
+| depth | tokens | unique | entropy bits | top frac |
+| --- | ---: | ---: | ---: | ---: |
+| 0 | 3951 | 403 | 7.900698 | 0.038471 |
+| 1 | 3951 | 496 | 8.560525 | 0.012655 |
+| 2 | 3951 | 498 | 8.508563 | 0.042268 |
+| 3 | 3951 | 486 | 8.104762 | 0.076943 |
+
+This is the largest and healthiest accepted-only cache so far.  It is still
+small and not split into train/val, but it is now a plausible minimum-size
+source for a conservative fine-tune experiment after visual/video checks.
+
+### Contact-sheet visual audit
+
+Generated:
+
+```text
+stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/contact_sheet_accepted_top16.png
+stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/contact_sheet_rejected_top16.png
+```
+
+Accepted top16 observations:
+
+- Most accepted rows remain upright and readable as sparse stick-figure
+  sequences.
+- Some accepted rows are still risky.  For example `013481` includes a
+  forward/drop-to-ground motion, and `003355` includes large high-leg poses.
+  These need MP4 inspection before using the accepted set for a report-level
+  model claim.
+
+Rejected top16 observations:
+
+- Several rejected rows are plausible hard cases such as floor/crouch motions,
+  football gestures, jumps, and high bends, matching the quality-filter intent.
+- Some static frames look like ordinary walking despite being rejected by
+  p99/max z-score or token-collapse rules.  This suggests the current thresholds
+  are conservative and should not be relaxed without temporal MP4 inspection.
+
+### Training path check
+
+To avoid filling the nearly-full `/home` filesystem, the checkpoint directory
+was placed under `/tmp`:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/train_real_text_gpt.py \
+  --train-cache stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_filtered.pt \
+  --val-cache stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_filtered.pt \
+  --init-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --output-dir /tmp/stage1_batch500_train_head_20260613 \
+  --epochs 1 \
+  --batch-size 8 \
+  --lr 1e-5 \
+  --train-scope head \
+  --num-workers 0 \
+  --gpu 0 \
+  --seed 13
+```
+
+Result:
+
+```text
+GPU not detected. Defaulting to CPU.
+train_scope=head trainable_parameters=7880448
+epoch=0 train=16.6888/acc=0.0571 val=19.8593/acc=0.0573 elapsed=107.6s
+elapsed_sec=116.42
+```
+
+This is a training-path check only.  Train and validation used the same cache,
+so these numbers do not measure generalization or model improvement.
+
+### Code and verification
+
+The batch tools now support `--quiet` compact JSON output to make larger
+experiments easier to log without dumping full per-file payloads:
+
+- `export_humanml3d_to_bvh.py`
+- `evaluate_bvh_metrics.py`
+- `diagnose_bvh_character_retarget.py`
+- `summarize_bvh_retarget_quality.py`
+- `build_bvh_character_gpt_cache.py`
+- `diagnose_token_distribution.py`
+
+Added `tests/test_stage1_quiet_cli.py` for lightweight CLI coverage.
+
+Verification:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/export_humanml3d_to_bvh.py \
+  Script/stage1/evaluate_bvh_metrics.py \
+  Script/stage1/diagnose_bvh_character_retarget.py \
+  Script/stage1/summarize_bvh_retarget_quality.py \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  Script/stage1/diagnose_token_distribution.py \
+  tests/test_stage1_quiet_cli.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_quiet_cli \
+  -v
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_bvh_metrics \
+  tests.test_stage1_bvh_retarget_quality \
+  tests.test_stage1_bvh_character_cache \
+  tests.test_stage1_bvh_character_retarget \
+  tests.test_stage1_humanml3d_bvh_export \
+  -v
+```
+
+Results:
+
+```text
+py_compile passed
+tests.test_stage1_quiet_cli: 6 tests passed
+related BVH/cache/retarget/export subset: 20 tests passed
+```
+
+### Interpretation and next action
+
+- HumanML3D is still the main route.  The current bridge is not perfect, but it
+  has now produced 90 accepted samples with a non-collapsed accepted-only token
+  distribution.
+- The accepted cache is close to a minimum useful size for a conservative
+  fine-tune, but it is not yet final training data because it lacks a held-out
+  accepted validation split and MP4 temporal audit.
+- A real LLM in-context token planning experiment has still not been run.  It
+  remains the backup route if a conservative fine-tune on this repaired data
+  does not improve multi-stage prompt generation.
+
+Recommended next step:
+
+```text
+create accepted-only train/val split from batch500 or a larger batch
+-> render MP4 for accepted risk cases and top rejected false-positive candidates
+-> train conservative base_head/temporal_base_head model
+-> run baseline-vs-finetuned Stage1 model suite on multi-stage prompts
+-> record BVH engineering metrics, videos, semantic checklist, and failure modes
+```
