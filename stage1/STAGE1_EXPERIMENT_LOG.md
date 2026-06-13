@@ -7252,21 +7252,172 @@ bvh_to_humanml3d_adapter:
   status = available_approximate_adapter_needs_metric_calibration
 ```
 
-Local `moconvq` environment check:
+So the immediate remaining paper-metric blockers after the adapter smoke are:
 
 ```text
-gdown module = missing
-```
-
-So the immediate remaining paper-metric blockers are:
-
-```text
-1. install/use gdown or otherwise obtain T2M evaluator assets;
-2. download/copy:
+1. obtain T2M evaluator assets;
+2. download or copy:
    - checkpoints/t2m/text_mot_match/model/finest.tar
    - checkpoints/t2m/text_mot_match/opt.txt
    - glove/our_vab_data.npy
    - glove/our_vab_words.pkl
 3. calibrate the approximate BVH-to-HumanML3D feature adapter before using
    FID/R-precision as final paper-level claims.
+```
+
+## 2026-06-13 T2M evaluator asset preparation helper and download attempt
+
+### Motivation
+
+After adding the BVH-to-HumanML3D feature adapter, the remaining paper-metric
+blocker is external evaluator assets.  T2M-GPT's official instructions download
+the evaluator extractor and glove resources from Google Drive using `gdown`.
+
+### gdown installation
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m pip install gdown
+```
+
+Result:
+
+```text
+Successfully installed beautifulsoup4-4.15.0 gdown-5.2.2 soupsieve-2.7
+```
+
+### Download attempt
+
+Without proxy:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m gdown \
+  --fuzzy https://drive.google.com/file/d/1FIiqtkt4F-GVWmnBgtZnv9W3cPWS-oM-/view \
+  -O /tmp/stage1_t2m_evaluator_assets/downloads/t2m.zip
+```
+
+Result:
+
+```text
+Network is unreachable
+```
+
+With the configured proxy:
+
+```bash
+export http_proxy="http://127.0.0.1:7898"
+export https_proxy="http://127.0.0.1:7898"
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m gdown \
+  --fuzzy https://drive.google.com/file/d/1FIiqtkt4F-GVWmnBgtZnv9W3cPWS-oM-/view \
+  -O /tmp/stage1_t2m_evaluator_assets/downloads/t2m.zip
+```
+
+Result:
+
+```text
+connection succeeded
+t2m.zip size: 1.22GB
+after 2m42s: about 31.5MB downloaded
+speed dropped from about 300KB/s to about 70KB/s
+download interrupted manually because expected completion was too long
+partial zip removed
+```
+
+So evaluator assets remain unavailable locally.  This is now an external asset
+availability / transfer-speed problem, not a missing-code problem.
+
+### Added helper
+
+Added:
+
+```text
+Script/stage1/prepare_t2m_evaluator_assets.py
+tests/test_stage1_prepare_t2m_evaluator_assets.py
+```
+
+Capabilities:
+
+```text
+check an evaluator asset root;
+copy required evaluator source files from a T2M-GPT checkout;
+unpack already-downloaded t2m.zip and glove.zip;
+print the official gdown/proxy/unpack/readiness commands.
+```
+
+Validation:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/prepare_t2m_evaluator_assets.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_prepare_t2m_evaluator_assets -v
+```
+
+Result:
+
+```text
+5 tests passed
+```
+
+Copied evaluator sources from the T2M-GPT inspection checkout:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/prepare_t2m_evaluator_assets.py \
+  --root /tmp/stage1_t2m_evaluator_assets \
+  --source-root /tmp/T2M-GPT-stage1-inspect \
+  --copy-sources
+```
+
+Result:
+
+```text
+copied:
+  - models/evaluator_wrapper.py
+  - utils/eval_trans.py
+  - options/get_eval_option.py
+
+missing assets:
+  - checkpoints/t2m/text_mot_match/model/finest.tar
+  - checkpoints/t2m/text_mot_match/opt.txt
+  - glove/our_vab_data.npy
+  - glove/our_vab_words.pkl
+```
+
+Readiness after copying sources:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/check_evaluation_readiness.py \
+  --repo-root . \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D \
+  --evaluator-root /tmp/stage1_t2m_evaluator_assets \
+  --output /tmp/stage1_eval_readiness_t2m_sources_copied.json
+```
+
+Result:
+
+```text
+paper_metrics_ready = false
+missing:
+  - pretrained HumanML3D evaluator / motion-feature extractor checkpoints
+
+t2m_evaluator.detected_source_files:
+  - models/evaluator_wrapper.py
+  - utils/eval_trans.py
+  - options/get_eval_option.py
+
+bvh_to_humanml3d_adapter.exists = true
+```
+
+Next evaluator-assets route:
+
+```text
+Either run the helper's printed gdown commands as a long background download,
+use a faster mirror/manual copy for t2m.zip and glove.zip, or place the four
+required files directly under /tmp/stage1_t2m_evaluator_assets before rerunning
+check_evaluation_readiness.py.
 ```

@@ -809,6 +809,34 @@ glove/our_vab_data.npy
 glove/our_vab_words.pkl
 ```
 
+为避免 evaluator 资产准备步骤散落在终端历史中，当前提供了 helper：
+
+```text
+Script/stage1/prepare_t2m_evaluator_assets.py
+tests/test_stage1_prepare_t2m_evaluator_assets.py
+```
+
+它支持：
+
+```bash
+# 检查一个 evaluator root 是否具备所需源码和资源
+python Script/stage1/prepare_t2m_evaluator_assets.py \
+  --root /tmp/stage1_t2m_evaluator_assets
+
+# 从已 clone 的 T2M-GPT 源码目录复制 evaluator 所需源码
+python Script/stage1/prepare_t2m_evaluator_assets.py \
+  --root /tmp/stage1_t2m_evaluator_assets \
+  --source-root /tmp/T2M-GPT-stage1-inspect \
+  --copy-sources
+
+# 打印官方 Google Drive 下载、解压、readiness 检查命令
+python Script/stage1/prepare_t2m_evaluator_assets.py \
+  --root /tmp/stage1_t2m_evaluator_assets \
+  --print-download-commands
+```
+
+当前 `/tmp/stage1_t2m_evaluator_assets` 已经可以从 `/tmp/T2M-GPT-stage1-inspect` 复制 evaluator source files；readiness 因此只剩 checkpoint/glove assets 缺失。`moconvq` 环境已经安装了 `gdown`，但 2026-06-13 的 Google Drive 下载尝试显示：无代理时网络不可达；使用 `127.0.0.1:7898` 代理可以连接，但 `t2m.zip` 约 1.22GB，速度从约 300KB/s 掉到 70KB/s 左右，2 分 42 秒只下载约 31.5MB，因此已中止并清理不完整 zip。后续需要长时间后台下载、换镜像，或手动放置上述四个 asset 文件。
+
 当前已经新增一个 MoConVQ BVH 到 HumanML3D feature 的近似 adapter：
 
 ```text
