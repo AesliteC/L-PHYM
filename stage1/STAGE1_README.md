@@ -424,6 +424,7 @@ Script/stage1/build_real_moconvq_gpt_cache.py
 Script/stage1/build_bvh_character_gpt_cache.py
 Script/stage1/summarize_bvh_retarget_quality.py
 Script/stage1/split_bvh_quality_summary.py
+Script/stage1/apply_bvh_quality_overrides.py
 Script/stage1/train_real_text_gpt.py
 ```
 
@@ -463,7 +464,10 @@ accepted-only cache 有 39 个窗口、3120 个有效 token，depth0 top fractio
 拒绝 410 条；accepted-only cache 有 90 个 50-token 窗口、15804 个有效 token、
 90 个唯一序列，depth0 top fraction 约 `0.038`。`split_bvh_quality_summary.py`
 进一步将 batch500 accepted rows 按 seed 13 划分为 72 train / 18 val，并分别构建
-train/val cache；1 epoch head-only train/val 路径检查已跑通。主要拒绝原因是短序列、depth0 token collapse、tokens 少和少量 retarget
+train/val cache；MP4 审计后，`apply_bvh_quality_overrides.py` 生成 filtered-v2
+summary：剔除 `013481` floor/prone accepted 样本，恢复 `010684` 与 `M012928`
+两个可视上较合理的 walking/turning rejected 样本；v2 cache 有 73 train / 18 val
+窗口，并通过 1 epoch head-only train/val 路径检查。主要拒绝原因是短序列、depth0 token collapse、tokens 少和少量 retarget
 后 observation z-score 异常。这说明 HumanML3D 主线没有被放弃，但正式训练不能再
 盲目使用早期 hand-written retarget cache；
 `make_bvh_contact_sheet.py` 可把 quality summary 中的 accepted/rejected BVH 抽帧成
@@ -475,6 +479,7 @@ processed HumanML3D new_joints/new_joint_vecs
   -> export_humanml3d_to_bvh.py --rotation-source joints_ik
   -> MoConVQ native MotionDataSet.add_bvh_with_character()
   -> per-file observation/token quality filter
+  -> optional MP4-audit manual override
   -> deterministic accepted train/val quality split
   -> accepted-only GPT cache
   -> conservative MoConGPT fine-tuning
@@ -958,4 +963,4 @@ stage1_artifacts/checkpoints/fixed_dataset_stage1_20260529_135401/best_val.pth
 
 ## 7. 当前状态一句话总结
 
-Stage1 的旧 fixed dataset 工程链路已经完整跑通，但旧 finetuned checkpoint 已判定无效：它改善了早停，却因训练/推理 latent 空间不一致、全量微调覆盖先验、以及 HumanML3D retarget/cache 质量不足导致视频质量差。当前代码已修复训练上下文 latent 重建，并把 HumanML3D 主线推进到 `joints_ik` BVH export -> MoConVQ-native character retarget -> per-file quality filter -> deterministic accepted train/val split -> accepted-only GPT cache；batch500 已产出 72 train / 18 val accepted 样本 cache，并通过 1 epoch head-only train/val 路径检查，证明该闭环可以扩展到接近保守训练的最低数据规模。下一步应渲染筛选样本 MP4 做人工检查，再重新训练保守 `--train-scope base_head` 或 `temporal_base_head` 版本并和 baseline 重新生成 BVH/MP4 对比。
+Stage1 的旧 fixed dataset 工程链路已经完整跑通，但旧 finetuned checkpoint 已判定无效：它改善了早停，却因训练/推理 latent 空间不一致、全量微调覆盖先验、以及 HumanML3D retarget/cache 质量不足导致视频质量差。当前代码已修复训练上下文 latent 重建，并把 HumanML3D 主线推进到 `joints_ik` BVH export -> MoConVQ-native character retarget -> per-file quality filter -> MP4-audit manual override -> deterministic accepted train/val split -> accepted-only GPT cache；batch500 filtered-v2 已产出 73 train / 18 val cache，并通过 1 epoch head-only train/val 路径检查，证明该闭环可以扩展到接近保守训练的最低数据规模。下一步应重新训练保守 `--train-scope base_head` 或 `temporal_base_head` 版本并和 baseline 重新生成 BVH/MP4 对比。

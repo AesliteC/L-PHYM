@@ -5778,3 +5778,232 @@ For the first conservative train run, use the existing batch500 train/val cache
 as a path baseline, but consider a filtered-v2 cache that removes floor/prone
 accepted rows and possibly restores visually plausible z-score-only walking
 rows after full MP4 inspection.
+
+## 2026-06-13: Batch500 filtered-v2 quality summary from MP4 audit
+
+### Purpose
+
+The MP4 audit identified one accepted row that should not be used in the first
+conservative fine-tune, and two rejected walking/turning rows that appeared
+usable enough to recover.  This experiment turns that audit into a reproducible
+quality-summary override and rebuilds train/val caches from the revised summary.
+
+### Code change
+
+Added:
+
+```text
+Script/stage1/apply_bvh_quality_overrides.py
+tests/test_stage1_bvh_quality_overrides.py
+```
+
+The override tool keeps the original quality summary intact and writes a new
+summary with explicit `manual_override_summary` metadata.  Rows forced into or
+out of the accepted set also receive a `manual_overrides` entry.
+
+### Overrides
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/apply_bvh_quality_overrides.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_summary.json \
+  --exclude '013481:mp4_audit_floor_prone_motion' \
+  --include '010684:mp4_audit_plausible_walk_turn' \
+  --include 'M012928:mp4_audit_plausible_walk_turn' \
+  --output-json stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_summary_v2_mp4_audit.json \
+  --quiet
+```
+
+Result:
+
+```text
+original accepted = 90
+v2 accepted = 91
+v2 rejected = 409
+
+manual exclude:
+  013481  mp4_audit_floor_prone_motion
+
+manual include:
+  010684   mp4_audit_plausible_walk_turn
+  M012928  mp4_audit_plausible_walk_turn
+```
+
+### Train/val split
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/split_bvh_quality_summary.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_summary_v2_mp4_audit.json \
+  --train-output stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_train_v2_seed13.json \
+  --val-output stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_val_v2_seed13.json \
+  --seed 13 \
+  --val-fraction 0.2 \
+  --quiet
+```
+
+Result:
+
+```text
+train accepted rows = 73
+val accepted rows = 18
+```
+
+The split summaries point back to `quality_summary_v2_mp4_audit.json` via
+`source_summary`; the top-level manual override metadata remains in that source
+summary.
+
+### Cache build
+
+Train cache:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_train_v2_seed13.json \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 50 \
+  --window-stride 25 \
+  --rvq-depth 4 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_train_v2_seed13.pt \
+  --observation-h5 stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/observations_train_v2_seed13.h5 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_train_v2_seed13_summary.json \
+  --quiet
+```
+
+Result:
+
+```text
+windows = 73
+valid_tokens = 12836
+unique_sequences = 73
+elapsed_sec = 27.35
+```
+
+Val cache:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/build_bvh_character_gpt_cache.py \
+  --quality-summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/quality_val_v2_seed13.json \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --motion-dataset /home/chenjie/cc/robotics/MoConVQ/simple_motion_data.h5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --window-size 50 \
+  --window-stride 25 \
+  --rvq-depth 4 \
+  --output stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_val_v2_seed13.pt \
+  --observation-h5 stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/observations_val_v2_seed13.h5 \
+  --summary stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_val_v2_seed13_summary.json \
+  --quiet
+```
+
+Result:
+
+```text
+windows = 18
+valid_tokens = 3160
+unique_sequences = 18
+elapsed_sec = 13.31
+```
+
+### Token distribution
+
+Train v2:
+
+| depth | tokens | unique | top frac |
+| --- | ---: | ---: | ---: |
+| 0 | 3209 | 375 | 0.037706 |
+| 1 | 3209 | 492 | 0.010907 |
+| 2 | 3209 | 497 | 0.036772 |
+| 3 | 3209 | 480 | 0.077594 |
+
+Val v2:
+
+| depth | tokens | unique | top frac |
+| --- | ---: | ---: | ---: |
+| 0 | 790 | 214 | 0.039241 |
+| 1 | 790 | 325 | 0.021519 |
+| 2 | 790 | 328 | 0.060759 |
+| 3 | 790 | 308 | 0.065823 |
+
+The v2 split remains non-collapsed.  The val set is still very small, so these
+numbers should be treated as a smoke check rather than a stable validation
+distribution.
+
+### Train/val training path check
+
+Command:
+
+```bash
+/usr/bin/time -f elapsed_sec=%e /home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/train_real_text_gpt.py \
+  --train-cache stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_train_v2_seed13.pt \
+  --val-cache stage1_artifacts/humanml_bvh_export_ik_batch500_20260613/gpt_cache_val_v2_seed13.pt \
+  --init-checkpoint /home/chenjie/cc/robotics/MoConVQ/text_generation_GPT.pth \
+  --base-data /home/chenjie/cc/robotics/MoConVQ/moconvq_base.data \
+  --output-dir /tmp/stage1_batch500_v2_trainval_head_seed13_20260613 \
+  --epochs 1 \
+  --batch-size 8 \
+  --lr 1e-5 \
+  --train-scope head \
+  --num-workers 0 \
+  --gpu 0 \
+  --seed 13
+```
+
+Result:
+
+```text
+GPU not detected. Defaulting to CPU.
+train_scope=head trainable_parameters=7880448
+epoch=0 train=16.7571/acc=0.0587 val=19.9805/acc=0.0472 elapsed=72.0s
+elapsed_sec = 79.92
+```
+
+Detailed log:
+
+```text
+train valid_tokens = 12836
+train depth_accuracy = [0.1736, 0.0337, 0.0128, 0.0150]
+val valid_tokens = 3160
+val depth_accuracy = [0.1544, 0.0203, 0.0114, 0.0025]
+```
+
+This confirms the filtered-v2 train/val caches are consumable by the real
+MoConGPT training path.  It is still a path check only, not an improvement claim.
+
+### Verification
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/apply_bvh_quality_overrides.py \
+  tests/test_stage1_bvh_quality_overrides.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_bvh_quality_overrides \
+  -v
+```
+
+Results:
+
+```text
+py_compile passed
+tests.test_stage1_bvh_quality_overrides: 3 tests passed
+```
+
+### Interpretation
+
+The filtered-v2 cache is a better candidate for the first conservative
+fine-tune than the raw batch500 accepted split because it incorporates explicit
+MP4 audit evidence.  It still remains small and should not be used for a final
+paper-level claim by itself.  The next step is to run a longer conservative
+`base_head` or `temporal_base_head` fine-tune from this v2 train cache, then
+compare baseline vs fine-tuned generation on multi-stage prompts with BVH
+metrics, videos, and a semantic checklist.

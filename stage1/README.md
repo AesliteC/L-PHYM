@@ -460,7 +460,7 @@ python -m unittest \
 7. **已新增 batch 级 BVH retarget 质量筛选，并扩大到 500 条样本诊断。**
    `diagnose_bvh_character_retarget.py --per-file` 会为每个 BVH 单独记录 observation z-score 和 RVQ token 分布；`summarize_bvh_retarget_quality.py` 会按临时工程阈值筛选候选样本。10 条 train split smoke 中，临时阈值接受 5 条、拒绝 5 条；50 条诊断中接受 10 条、拒绝 40 条；100 条诊断中接受 16 条、拒绝 84 条。batch100 accepted-only cache 有 61 个窗口、4880 个有效 token，depth0 top fraction 约 `0.023`，并通过 head-only 训练 smoke。拒绝原因主要包括短序列、observation z-score 异常、以及低 z-score 但 depth0 token collapse。该结果说明质量过滤是必要步骤；正式训练前仍应继续扩大样本、渲染接受/拒绝样本视频，并根据 false positive/false negative 调整阈值。
 
-   2026-06-13 的 batch500 诊断把同一路线扩大到 500 个 HumanML3D train split 样本：临时阈值接受 90 条、拒绝 410 条；accepted-only cache 有 90 个 50-token 窗口、15804 个有效 RVQ token、90 个唯一序列，depth0 top fraction 约 `0.038`。整体 native retarget observation p99 `|z|` 约 `5.05`，但 max `|z|` 仍约 `68.33`，说明少量异常样本仍存在。主要拒绝原因仍是 depth0 token collapse、短序列、tokens 少和少量 z-score 异常。accepted/rejected contact sheet 静态审计显示 accepted 大多直立可读，但仍会放入趴倒、高抬腿等复杂动作；rejected 中也有静态上看似正常的走路样本被 z-score/token collapse 保守拒绝。随后 `split_bvh_quality_summary.py` 将 90 条 accepted 样本按 seed 13 划分为 72 train / 18 val，并分别构建 cache：train 有 72 个窗口、12552 个有效 token；val 有 18 个窗口、3252 个有效 token。1 epoch head-only train/val 路径检查可跑通，但这仍不是模型改进结论；正式结论还需要 MP4 审计和 baseline-vs-finetuned 生成对比。
+   2026-06-13 的 batch500 诊断把同一路线扩大到 500 个 HumanML3D train split 样本：临时阈值接受 90 条、拒绝 410 条；accepted-only cache 有 90 个 50-token 窗口、15804 个有效 RVQ token、90 个唯一序列，depth0 top fraction 约 `0.038`。整体 native retarget observation p99 `|z|` 约 `5.05`，但 max `|z|` 仍约 `68.33`，说明少量异常样本仍存在。主要拒绝原因仍是 depth0 token collapse、短序列、tokens 少和少量 z-score 异常。accepted/rejected contact sheet 静态审计显示 accepted 大多直立可读，但仍会放入趴倒、高抬腿等复杂动作；rejected 中也有静态上看似正常的走路样本被 z-score/token collapse 保守拒绝。随后 `split_bvh_quality_summary.py` 将 90 条 accepted 样本按 seed 13 划分为 72 train / 18 val，并分别构建 cache：train 有 72 个窗口、12552 个有效 token；val 有 18 个窗口、3252 个有效 token。MP4 审计后，`apply_bvh_quality_overrides.py` 生成 filtered-v2 summary：剔除 `013481` floor/prone accepted 样本，恢复 `010684` 与 `M012928` 两个可视上较合理的 walking/turning rejected 样本；v2 cache 有 73 train / 18 val 窗口，train/val token 分布仍未 collapse，并通过 1 epoch head-only train/val 路径检查。但这仍不是模型改进结论；正式结论还需要较长保守微调和 baseline-vs-finetuned 生成对比。
 
 ## 后续工作
 
@@ -484,6 +484,7 @@ Script/stage1/export_humanml3d_to_bvh.py
 Script/stage1/build_real_moconvq_gpt_cache.py
 Script/stage1/build_bvh_character_gpt_cache.py
 Script/stage1/split_bvh_quality_summary.py
+Script/stage1/apply_bvh_quality_overrides.py
 Script/stage1/summarize_bvh_retarget_quality.py
 Script/stage1/make_bvh_contact_sheet.py
 Script/stage1/train_real_text_gpt.py
