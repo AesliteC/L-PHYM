@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 
@@ -223,9 +224,30 @@ def split_text_segments(text: str, joiner: str = " then ") -> list[str]:
     return [segment for segment in segments if segment]
 
 
-def resolve_generation_mode(mode: str, text: str, segment_joiner: str) -> str:
+def parse_segments_json(value: str | None) -> list[str] | None:
+    if value is None or not value.strip():
+        return None
+    parsed = json.loads(value)
+    if not isinstance(parsed, list):
+        raise ValueError("--segments-json must be a JSON list of strings")
+    segments = [str(item).strip() for item in parsed if str(item).strip()]
+    if not segments:
+        raise ValueError("--segments-json must contain at least one non-empty segment")
+    if len(segments) != len(parsed):
+        raise ValueError("--segments-json contains an empty segment")
+    return segments
+
+
+def resolve_generation_mode(
+    mode: str,
+    text: str,
+    segment_joiner: str,
+    explicit_segments: list[str] | None = None,
+) -> str:
     if mode not in {"auto", "rolling", "segmented"}:
         raise ValueError(f"unknown generation mode: {mode}")
+    if explicit_segments is not None and mode == "auto":
+        return "segmented" if len(explicit_segments) > 1 else "rolling"
     if mode != "auto":
         return mode
     return "segmented" if len(split_text_segments(text, joiner=segment_joiner)) > 1 else "rolling"
@@ -364,6 +386,11 @@ def main():
     parser.add_argument("--chunk-size", type=int, default=25)
     parser.add_argument("--generation-mode", choices=("auto", "rolling", "segmented"), default="auto")
     parser.add_argument("--segment-joiner", default=" then ")
+    parser.add_argument(
+        "--segments-json",
+        default="",
+        help="Optional JSON list of explicit text segments. Overrides --segment-joiner splitting for segmented mode.",
+    )
     parser.add_argument("--segment-length", type=int, default=None)
     parser.add_argument("--segment-lengths", default=None)
     parser.add_argument("--allow-early-stop", action="store_true")
@@ -403,7 +430,13 @@ def main():
     model.load_state_dict(state, strict=False)
     model.eval()
 
-    generation_mode = resolve_generation_mode(args.generation_mode, args.text, args.segment_joiner)
+    explicit_segments = parse_segments_json(args.segments_json)
+    generation_mode = resolve_generation_mode(
+        args.generation_mode,
+        args.text,
+        args.segment_joiner,
+        explicit_segments=explicit_segments,
+    )
     if generation_mode == "rolling" and args.text_encoder == "t5":
         bert_feature, bert_mask = encode_text_with_t5(
             args.text,
@@ -434,7 +467,7 @@ def main():
             progress_prefix_cap=args.progress_prefix_cap,
         )
     else:
-        segments = split_text_segments(args.text, joiner=args.segment_joiner)
+        segments = explicit_segments if explicit_segments is not None else split_text_segments(args.text, joiner=args.segment_joiner)
         segment_lengths = resolve_segment_lengths(
             segment_lengths_arg=args.segment_lengths,
             segment_length_arg=args.segment_length,

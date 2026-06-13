@@ -12,7 +12,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from Script.stage1.evaluate_bvh_metrics import evaluate_bvh_files, load_bvh_motion
-from Script.stage1.run_text_gpt_comparison import read_prompts, run_command
+from Script.stage1.run_text_gpt_comparison import format_prompt_tsv_line, prompt_summary, read_prompts, run_command
 
 
 DEFAULT_PROMPTS = (
@@ -41,6 +41,7 @@ def generate_gpt_bvh(
     *,
     prompt_name: str,
     prompt_text: str,
+    prompt_segments: Iterable[str] = (),
     model_name: str,
     checkpoint: str,
     output_bvh: Path,
@@ -103,6 +104,9 @@ def generate_gpt_bvh(
         command.extend(["--segment-length", str(args.segment_length)])
     if args.segment_lengths:
         command.extend(["--segment-lengths", args.segment_lengths])
+    prompt_segments = tuple(prompt_segments)
+    if prompt_segments:
+        command.extend(["--segments-json", json.dumps(list(prompt_segments), ensure_ascii=False)])
     if not args.skip_generation:
         run_command(command, log_path=log_path)
     return {
@@ -406,18 +410,17 @@ def main(argv: Iterable[str] | None = None) -> None:
     if not args.prompts:
         write_default_prompts(prompts_path)
     prompts = read_prompts(prompts_path)
-    (suite_dir / "prompts.tsv").write_text(
-        "".join(f"{name}\t{text}\n" for name, text in prompts),
-        encoding="utf-8",
-    )
+    (suite_dir / "prompts.tsv").write_text("".join(format_prompt_tsv_line(prompt) for prompt in prompts), encoding="utf-8")
 
     generated: list[dict[str, object]] = []
     if not args.skip_gpt:
-        for prompt_name, prompt_text in prompts:
+        for prompt in prompts:
+            prompt_name, prompt_text = prompt
             generated.append(
                 generate_gpt_bvh(
                     prompt_name=prompt_name,
                     prompt_text=prompt_text,
+                    prompt_segments=prompt.segments,
                     model_name="baseline_top_p",
                     checkpoint=args.baseline_checkpoint,
                     output_bvh=bvh_dir / f"{prompt_name}__baseline_top_p.bvh",
@@ -430,6 +433,7 @@ def main(argv: Iterable[str] | None = None) -> None:
                 generate_gpt_bvh(
                     prompt_name=prompt_name,
                     prompt_text=prompt_text,
+                    prompt_segments=prompt.segments,
                     model_name="finetuned_top_p",
                     checkpoint=args.finetuned_checkpoint,
                     output_bvh=bvh_dir / f"{prompt_name}__finetuned_top_p.bvh",
@@ -480,7 +484,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         "run_id": args.run_id,
         "suite_dir": str(suite_dir),
         "bvh_dir": str(bvh_dir),
-        "prompts": [{"name": name, "text": text} for name, text in prompts],
+        "prompts": [prompt_summary(prompt) for prompt in prompts],
         "generated": generated,
         "metrics": str(metrics_path),
         "model_averages": summarize_by_model(metrics),

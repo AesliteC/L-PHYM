@@ -14,20 +14,69 @@ if __package__ in {None, ""}:
 from Script.stage1.evaluate_bvh_metrics import evaluate_bvh_files, load_bvh_motion
 
 
-def read_prompts(path: Path) -> list[tuple[str, str]]:
-    prompts: list[tuple[str, str]] = []
+class PromptRecord(tuple):
+    def __new__(cls, name: str, text: str, segments: Iterable[str] | None = None):
+        obj = super().__new__(cls, (name, text))
+        obj.segments = tuple(segments or ())
+        return obj
+
+    @property
+    def name(self) -> str:
+        return self[0]
+
+    @property
+    def text(self) -> str:
+        return self[1]
+
+
+def _parse_prompt_segments(raw: str, path: Path, line_no: int) -> tuple[str, ...]:
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid prompt segment JSON at {path}:{line_no}: {exc}") from exc
+    if not isinstance(parsed, list):
+        raise ValueError(f"prompt segment field must be a JSON list at {path}:{line_no}")
+    segments = tuple(str(item).strip() for item in parsed)
+    if not segments or any(not item for item in segments):
+        raise ValueError(f"prompt segment field contains empty segments at {path}:{line_no}")
+    return segments
+
+
+def format_prompt_tsv_line(prompt: PromptRecord | tuple[str, str]) -> str:
+    name, text = prompt
+    segments = getattr(prompt, "segments", ())
+    if segments:
+        return f"{name}\t{text}\t{json.dumps(list(segments), ensure_ascii=False)}\n"
+    return f"{name}\t{text}\n"
+
+
+def prompt_summary(prompt: PromptRecord | tuple[str, str]) -> dict[str, object]:
+    name, text = prompt
+    summary: dict[str, object] = {"name": name, "text": text}
+    segments = getattr(prompt, "segments", ())
+    if segments:
+        summary["segments"] = list(segments)
+    return summary
+
+
+def read_prompts(path: Path) -> list[PromptRecord]:
+    prompts: list[PromptRecord] = []
     for line_no, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
             continue
         if "\t" not in stripped:
             raise ValueError(f"expected TSV prompt at {path}:{line_no}")
-        name, text = stripped.split("\t", 1)
+        fields = stripped.split("\t", 2)
+        if len(fields) not in {2, 3}:
+            raise ValueError(f"expected 2 or 3 TSV fields at {path}:{line_no}")
+        name, text = fields[0], fields[1]
         name = name.strip()
         text = text.strip()
         if not name or not text:
             raise ValueError(f"empty prompt field at {path}:{line_no}")
-        prompts.append((name, text))
+        segments = _parse_prompt_segments(fields[2].strip(), path, line_no) if len(fields) == 3 and fields[2].strip() else ()
+        prompts.append(PromptRecord(name, text, segments))
     if not prompts:
         raise ValueError(f"no prompts found in {path}")
     return prompts
@@ -129,14 +178,12 @@ def main(argv: Iterable[str] | None = None) -> None:
     individual_video_dir = video_dir / "individual"
     bvh_dir.mkdir(parents=True, exist_ok=True)
     video_dir.mkdir(parents=True, exist_ok=True)
-    (bvh_dir / "prompts.tsv").write_text(
-        "".join(f"{name}\t{text}\n" for name, text in prompts),
-        encoding="utf-8",
-    )
+    (bvh_dir / "prompts.tsv").write_text("".join(format_prompt_tsv_line(prompt) for prompt in prompts), encoding="utf-8")
 
     generated_bvh: list[dict[str, object]] = []
     logs: list[str] = []
-    for prompt_name, prompt_text in prompts:
+    for prompt in prompts:
+        prompt_name, prompt_text = prompt
         for model_name, checkpoint in (
             ("baseline_top_p", args.baseline_checkpoint),
             ("finetuned_top_p", args.finetuned_checkpoint),
@@ -199,6 +246,8 @@ def main(argv: Iterable[str] | None = None) -> None:
                     command.extend(["--segment-length", str(args.segment_length)])
                 if args.segment_lengths:
                     command.extend(["--segment-lengths", args.segment_lengths])
+                if prompt.segments:
+                    command.extend(["--segments-json", json.dumps(list(prompt.segments), ensure_ascii=False)])
                 run_command(command, log_path=log_path)
             generated_bvh.append(
                 {
@@ -233,7 +282,8 @@ def main(argv: Iterable[str] | None = None) -> None:
             )
             individual_videos.append(str((individual_video_dir / bvh_path.name).with_suffix(".mp4")))
 
-        for prompt_name, _ in prompts:
+        for prompt in prompts:
+            prompt_name = prompt.name
             left = individual_video_dir / f"{prompt_name}__baseline_top_p.mp4"
             right = individual_video_dir / f"{prompt_name}__finetuned_top_p.mp4"
             output = video_dir / f"{prompt_name}__baseline_top_p_vs_finetuned_top_p.mp4"
@@ -278,7 +328,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         },
         "baseline_checkpoint": args.baseline_checkpoint,
         "finetuned_checkpoint": args.finetuned_checkpoint,
-        "prompts": [{"name": name, "text": text} for name, text in prompts],
+        "prompts": [prompt_summary(prompt) for prompt in prompts],
         "bvh_dir": str(bvh_dir),
         "video_dir": str(video_dir),
         "bvh": generated_bvh,

@@ -486,6 +486,34 @@ class Stage1RealGenerateTests(unittest.TestCase):
         self.assertEqual(resolve_generation_mode("auto", "walk forward", " then "), "rolling")
         self.assertEqual(resolve_generation_mode("rolling", "walk then turn", " then "), "rolling")
         self.assertEqual(resolve_generation_mode("segmented", "walk forward", " then "), "segmented")
+        self.assertEqual(
+            resolve_generation_mode(
+                "auto",
+                "walk then turn",
+                " then ",
+                explicit_segments=["walk then turn"],
+            ),
+            "rolling",
+        )
+        self.assertEqual(
+            resolve_generation_mode(
+                "auto",
+                "walk then turn",
+                " then ",
+                explicit_segments=["walk", "turn"],
+            ),
+            "segmented",
+        )
+
+    def test_explicit_segments_json_parser(self):
+        from Script.stage1.generate_long_motion import parse_segments_json
+
+        self.assertEqual(parse_segments_json('["walk", "turn then wave"]'), ["walk", "turn then wave"])
+        self.assertIsNone(parse_segments_json(""))
+        with self.assertRaises(ValueError):
+            parse_segments_json('"walk"')
+        with self.assertRaises(ValueError):
+            parse_segments_json('["walk", ""]')
 
     def test_segment_lengths_resolver_uses_max_length_when_segment_length_is_omitted(self):
         from Script.stage1.generate_long_motion import resolve_segment_lengths

@@ -27,6 +27,25 @@ class Stage1TextGPTComparisonTests(unittest.TestCase):
                 ],
             )
 
+    def test_read_prompts_accepts_explicit_segment_column(self):
+        import json
+
+        from Script.stage1.run_text_gpt_comparison import read_prompts
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "prompts.tsv"
+            path.write_text(
+                "walk_turn\twalk then turn\t"
+                + json.dumps(["walk", "turn"], ensure_ascii=False)
+                + "\n",
+                encoding="utf-8",
+            )
+
+            prompts = read_prompts(path)
+
+            self.assertEqual(prompts, [("walk_turn", "walk then turn")])
+            self.assertEqual(prompts[0].segments, ("walk", "turn"))
+
     def test_read_prompts_rejects_non_tsv_line(self):
         from Script.stage1.run_text_gpt_comparison import read_prompts
 
@@ -45,7 +64,12 @@ class Stage1TextGPTComparisonTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             prompts = tmp / "prompts.tsv"
-            prompts.write_text("walk_turn\twalk then turn\n", encoding="utf-8")
+            prompts.write_text(
+                "walk_turn\twalk then turn\t"
+                + json.dumps(["walk", "turn"], ensure_ascii=False)
+                + "\n",
+                encoding="utf-8",
+            )
             bvh_dir = tmp / "bvh"
             video_dir = tmp / "video"
             commands = []
@@ -129,10 +153,13 @@ class Stage1TextGPTComparisonTests(unittest.TestCase):
                 self.assertEqual(command[command.index("--progress-prefix-cap") + 1], "25")
                 self.assertIn("--segment-joiner", command)
                 self.assertEqual(command[command.index("--segment-joiner") + 1], " THEN ")
+                self.assertIn("--segments-json", command)
+                self.assertEqual(json.loads(command[command.index("--segments-json") + 1]), ["walk", "turn"])
             summary = json.loads((video_dir / "summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary["sampling"]["progress_context_size"], 51)
             self.assertEqual(summary["sampling"]["progress_prefix_cap"], 25)
             self.assertEqual(summary["sampling"]["segment_joiner"], " THEN ")
+            self.assertEqual(summary["prompts"][0]["segments"], ["walk", "turn"])
 
 
 if __name__ == "__main__":

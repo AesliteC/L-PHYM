@@ -8151,7 +8151,25 @@ Commands:
 Result:
 
 ```text
-20 tests passed
+22 tests passed
+```
+
+After adding the evaluator/readiness tests to the same validation batch:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_real_generate \
+  tests.test_stage1_text_gpt_comparison \
+  tests.test_stage1_model_suite \
+  tests.test_stage1_evaluation_readiness \
+  tests.test_stage1_t2m_paper_metrics \
+  -v
+```
+
+Result:
+
+```text
+31 tests passed
 ```
 
 ### Current honest conclusion
@@ -8168,3 +8186,185 @@ R-precision cutoff, especially R-precision@3, so the final report should present
 it as a meaningful but incomplete Stage1 result, not as a full paper-metric
 victory.
 ```
+
+## 2026-06-14: Explicit segment-boundary inference diagnostic
+
+The previous segment-aligned run made training and inference closer by using
+local segment captions in the cache and `" then "` segmented inference.  A
+remaining mismatch was found during review: HumanML3D clip captions themselves
+can contain the literal text `then`, for example:
+
+```text
+they then scrub ...
+right foot, then moves ...
+left arm and then brings ...
+```
+
+Plain `text.split(" then ")` therefore can split one original HumanML3D clip
+caption into smaller inference segments than the model saw during training.
+This is a real training/inference granularity mismatch, not just a prompt-style
+preference.
+
+### Code change
+
+Added an optional explicit segment route:
+
+```text
+Script/stage1/generate_long_motion.py
+  --segments-json '["segment 1", "segment 2", ...]'
+
+Script/stage1/run_text_gpt_comparison.py
+Script/stage1/run_stage1_model_suite.py
+  prompts.tsv may now contain:
+  name<TAB>long_text<TAB>["segment 1", "segment 2", ...]
+```
+
+Behavior:
+
+- Existing two-column prompt TSV files are unchanged.
+- If the third column is present, the runner forwards `--segments-json` to
+  `generate_long_motion.py`.
+- `generation_mode=auto` uses explicit segments to decide segmented vs rolling
+  generation, and the T5 encoder sees the natural segment captions only, not a
+  synthetic separator token.
+
+Tests:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/generate_long_motion.py \
+  Script/stage1/run_text_gpt_comparison.py \
+  Script/stage1/run_stage1_model_suite.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_real_generate \
+  tests.test_stage1_text_gpt_comparison \
+  tests.test_stage1_model_suite \
+  -v
+```
+
+Result:
+
+```text
+22 tests passed
+```
+
+### Val8 explicit-segment prompts
+
+The explicit Val8 prompt file was reconstructed from
+`/tmp/stage1_segment_aligned_bvh_native_200_20260614/val_cache.pt`, using each
+sequence's `segment_idx -> caption` entries:
+
+```text
+/tmp/stage1_segment_aligned_val8_explicit_segments_prompts.tsv
+```
+
+This restored clip-level segments such as:
+
+```text
+["a person reaches their right hand down to pick something up like a bucket. they then scrub ...",
+ "a person takes four steps forward ...",
+ "a person walks forward ..."]
+```
+
+so `they then scrub` is no longer split into an artificial segment boundary.
+
+### Epoch 3 explicit-segment Val8 result
+
+Artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch3_val8_explicit_compare_20260614
+/tmp/stage1_t2m_paper_metrics_segment_aligned_head_epoch3_val8_explicit_20260614/summary.json
+```
+
+Engineering metrics:
+
+| Metric | Baseline | Finetuned epoch3 |
+| --- | ---: | ---: |
+| avg frames | 1185 | 1242 |
+| early-stop rate | 0.50 | 0.375 |
+| root path | 1.8738 | 1.9619 |
+| pose velocity mean | 14.2572 | 13.5024 |
+| pose variance mean | 162.1355 | 165.2165 |
+| lag20 repeat fraction | 0.0026 | 0.0090 |
+
+Approximate T2M evaluator metrics:
+
+| Metric | Baseline | Finetuned epoch3 |
+| --- | ---: | ---: |
+| FID lower is better | 16.1725 | 17.0217 |
+| R-precision@1 higher is better | 0.25 | 0.25 |
+| R-precision@2 higher is better | 0.25 | 0.25 |
+| R-precision@3 higher is better | 0.75 | 0.75 |
+| matching score lower is better | 5.0352 | 5.0437 |
+
+Interpretation:
+
+- Explicit segment boundaries improve the fairness/consistency of the
+  inference protocol and still show better duration/early-stop/root-path
+  engineering metrics for the finetuned checkpoint.
+- They do **not** improve approximate FID or matching score for epoch 3; the
+  R-precision cutoffs are tied.
+- Therefore the stronger old Val8 FID/R@1 gain partly depends on the plain
+  `" then "` splitting protocol.  It should remain reported, but not overstated
+  as the final answer to the training/inference consistency issue.
+
+### Epoch 5 explicit-segment Val8 result
+
+Artifacts:
+
+```text
+/tmp/stage1_segment_aligned_bvh_native_200_head_epoch5_val8_explicit_compare_20260614
+/tmp/stage1_t2m_paper_metrics_segment_aligned_head_epoch5_val8_explicit_20260614/summary.json
+```
+
+Engineering metrics:
+
+| Metric | Baseline | Finetuned epoch5 |
+| --- | ---: | ---: |
+| avg frames | 1185 | 1242 |
+| early-stop rate | 0.50 | 0.375 |
+| root path | 1.8738 | 1.9595 |
+| pose velocity mean | 14.2572 | 16.2754 |
+| pose variance mean | 162.1355 | 184.4212 |
+| lag20 repeat fraction | 0.0026 | 0.0032 |
+
+Approximate T2M evaluator metrics:
+
+| Metric | Baseline | Finetuned epoch5 |
+| --- | ---: | ---: |
+| FID lower is better | 16.1725 | 17.0251 |
+| R-precision@1 higher is better | 0.25 | 0.25 |
+| R-precision@2 higher is better | 0.25 | 0.25 |
+| R-precision@3 higher is better | 0.75 | 0.75 |
+| matching score lower is better | 5.0352 | 5.0782 |
+
+Interpretation:
+
+- Epoch 5 does not fix the explicit-boundary paper-metric gap.
+- It has better lag20 repeat than epoch 3 explicit, but worse matching score
+  and still worse FID than baseline.
+
+### Updated conclusion after explicit-boundary diagnostic
+
+The implementation should keep the explicit segment route because it is the
+most faithful way to match HumanML3D clip-caption training boundaries during
+inference.  However, the current best reportable improvement is still the
+plain-`" then "` epoch3 Val8 result:
+
+```text
+baseline -> finetuned epoch3:
+FID 18.1357 -> 16.2093
+R@1 0.25 -> 0.375
+R@2 0.625 -> 0.625
+matching score 4.3217 -> 4.1888
+early-stop 0.375 -> 0.25
+```
+
+For the final report, present both:
+
+1. `plain then` Val8 as the current best partial metric improvement;
+2. explicit clip-boundary Val8 as a stricter consistency diagnostic that shows
+   the finetuned model improves duration/coverage but not approximate
+   FID/matching yet.
