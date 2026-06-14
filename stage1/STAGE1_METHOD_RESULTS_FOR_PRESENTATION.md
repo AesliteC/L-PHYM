@@ -12,6 +12,24 @@
 视频和 contact sheet 没有 push 到 GitHub，因为它们属于生成 artifact，按仓库卫生
 规则不提交 `.mp4` / `.png`。当前主要保存在 `/tmp`。
 
+本地审阅包已经复制到工作目录：
+
+```text
+stage1_artifacts/review_videos_20260614/
+```
+
+其中重新命名的 comparison 视频和每个视频对应的 prompt 在：
+
+```text
+stage1_artifacts/review_videos_20260614/comparison_videos_renamed/MANIFEST.md
+```
+
+N=100 大样本指标和 prompt 文件在：
+
+```text
+stage1_artifacts/review_videos_20260614/long100_metrics/
+```
+
 ### 1.1 最终最推荐展示的视频
 
 这两个是当前最适合 oral presentation 展示的 baseline vs fine-tuned side-by-side
@@ -41,6 +59,10 @@ suite      = Held-out Val8 strict protocol
 视频结论：没有空帧、整体倒置、骨架爆炸。fine-tuned 通常更能持续运动，root/path
 coverage 更大。`train_000077` 是较好的展示样例，低姿态/蹲跪动作没有马上崩掉。
 但仍有动作语义细节不稳定和姿态不自然的问题。
+
+注意：这些视频的原始样本名里有 `train_000057` 等字符串，是 HumanML3D 风格
+sample id，不表示指标是在训练损失上评估。新的本地视频包已统一重命名为
+`comparison_*.mp4`。
 
 ### 1.2 最终 Val18 静态可视化
 
@@ -834,7 +856,57 @@ Epoch3 gives stronger FID/R@1/matching, while epoch2 is safer for full Val18
 because it avoids R@1/R@2 regression and improves R@3.
 ```
 
-### 13.4 Negative decoding result
+### 13.4 HumanML3D-test Long100 大样本检查
+
+为了回答“小样本 Val8/Val18 是否有说服力”的问题，额外构造了一个更大的
+HumanML3D test split long-prompt suite：
+
+```text
+source split = HumanML3D/HumanML3D/test.txt
+prompts = 100
+segments per prompt = 3
+source captions = 300 held-out HumanML3D captions
+segment_lengths = [25, 25, 25]
+checkpoint = base_head epoch3
+decoding = top_p=0.95, temp=1.0
+```
+
+Artifacts:
+
+```text
+/tmp/stage1_humanml_test_long100_basehead_epoch3_batch_20260614
+/tmp/stage1_t2m_paper_metrics_humanml_test_long100_basehead_epoch3_20260614/summary.json
+stage1_artifacts/review_videos_20260614/long100_metrics/
+```
+
+结果：
+
+| metric | baseline | fine-tuned epoch3 |
+| --- | ---: | ---: |
+| samples | 100 | 100 |
+| avg frames | 1216.56 | 1230.96 |
+| early-stop rate | 0.44 | 0.41 |
+| root path | 3.3679 | 3.4323 |
+| pose velocity mean | 38.0968 | 37.5597 |
+| approximate FID lower is better | 7.0400 | 7.2092 |
+| approximate R@1 higher is better | 0.050 | 0.050 |
+| approximate R@2 higher is better | 0.110 | 0.140 |
+| approximate R@3 higher is better | 0.160 | 0.160 |
+| approximate matching lower is better | 5.0077 | 4.9591 |
+
+结论：
+
+```text
+N=100 下结论是 mixed，不是全面超过 baseline。
+fine-tuned 改善 R@2、matching、平均长度、early-stop 和 root path；
+R@1/R@3 持平；
+FID 略差。
+```
+
+这比 Val8/Val18 更有说服力，因此最终 oral/report 应该把 Stage1 表述成：
+**pipeline 和视频可用，语义匹配与 rollout 有轻微改善，但论文指标没有稳定全赢**。
+
+### 13.5 Negative decoding result
 
 降低 sampling entropy 不是答案：
 
@@ -863,7 +935,9 @@ Stage1 成功构建了一个 HumanML3D -> MoConVQ native character retarget ->
 text-conditioned MoConGPT fine-tuning -> long text generation -> approximate
 FID/R-precision evaluation 的可复现 pipeline。修复数据映射和训练/推理
 segment 对齐后，fine-tuned model 在长多阶段 prompt 上相对 baseline 取得
-partial but meaningful improvement，但还不是完全解决。
+partial improvement。更有说服力的 N=100 HumanML3D-test 检查显示：R@2、
+matching、平均长度、early-stop 和 root path 有改善，但 FID 略差，R@1/R@3
+持平。因此不能声称论文指标全面超过 baseline。
 ```
 
 ### 14.2 主要贡献
@@ -884,11 +958,13 @@ partial but meaningful improvement，但还不是完全解决。
 ### 14.3 局限性
 
 1. FID/R-precision 是 approximate evaluator-adapter route，不是原生 SMPL 评估。
-2. Val18 上不同 checkpoint 存在 R@1/R@2/R@3 trade-off，没有所有 retrieval cutoff
+2. 更有说服力的 N=100 HumanML3D-test 检查是 mixed result：R@2/matching 改善，
+   但 FID 略差，R@1/R@3 持平。
+3. Val18 上不同 checkpoint 存在 R@1/R@2/R@3 trade-off，没有所有 retrieval cutoff
    全赢。
-3. 视频上仍有姿态不自然和语义细节失败。
-4. 训练数据规模仍小：最终 segment-aligned cache 是 73 train / 18 val long sequences。
-5. evaluator 会截断 long sequence 到 196 frames at 20 FPS，因此长程后半段语义不能被
+4. 视频上仍有姿态不自然和语义细节失败。
+5. 训练数据规模仍小：最终 segment-aligned cache 是 73 train / 18 val long sequences。
+6. evaluator 会截断 long sequence 到 196 frames at 20 FPS，因此长程后半段语义不能被
    FID/R-precision 完整衡量。
 
 ## 15. Oral presentation 建议结构
@@ -992,16 +1068,36 @@ Fine-tuned is more persistent and covers more trajectory, no catastrophic
 collapse, but semantic precision is still limited.
 ```
 
-### Slide 9: Limitations
+### Slide 9: Larger N=100 Check
+
+Show:
+
+```text
+HumanML3D-test long100:
+FID: 7.040 -> 7.209  (worse)
+R@1: 0.050 -> 0.050  (tie)
+R@2: 0.110 -> 0.140  (better)
+R@3: 0.160 -> 0.160  (tie)
+matching: 5.008 -> 4.959  (better)
+early-stop: 0.44 -> 0.41  (better)
+```
+
+Message:
+
+```text
+The stronger N=100 check supports partial improvement, not full dominance.
+```
+
+### Slide 10: Limitations
 
 ```text
 approximate evaluator adapter
 small final training set
-mixed Val18 R-precision
+mixed N=100 and Val18 R-precision
 visual artifacts remain
 ```
 
-### Slide 10: Final takeaway
+### Slide 11: Final takeaway
 
 ```text
 Stage1 is complete as a reproducible pipeline and partial improvement result.
@@ -1070,4 +1166,3 @@ quality still has semantic and pose artifacts.  The reported FID/R-precision
 numbers are approximate evaluator-adapter metrics because generated MoConVQ BVHs
 are converted to HumanML3D 22-joint / 263-d features before evaluation.
 ```
-

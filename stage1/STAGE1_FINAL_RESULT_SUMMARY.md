@@ -121,10 +121,57 @@ num_prompts = 18
 
 ## Selected Results
 
+### Larger HumanML3D-Test Long100 Check
+
+After the initial Val8/Val18 checks, a larger independent prompt suite was
+constructed from the HumanML3D `test.txt` split.  It samples 300 held-out
+HumanML3D captions and combines them into 100 three-segment long prompts:
+
+```text
+test caption A then test caption B then test caption C
+segments_json = [A, B, C]
+segment_lengths = [25, 25, 25]
+```
+
+This check is more convincing than the Val8/Val18 sanity sets because it uses
+100 generated prompts rather than 8 or 18.  The result is mixed, not a full
+win:
+
+| Metric | Baseline | Fine-tuned epoch3 |
+| --- | ---: | ---: |
+| prompts | 100 | 100 |
+| generated BVHs | 100 | 100 |
+| avg frames | 1216.56 | 1230.96 |
+| early-stop rate | 0.44 | 0.41 |
+| root path | 3.3679 | 3.4323 |
+| pose velocity mean | 38.0968 | 37.5597 |
+| approximate FID lower is better | 7.0400 | 7.2092 |
+| approximate R@1 higher is better | 0.050 | 0.050 |
+| approximate R@2 higher is better | 0.110 | 0.140 |
+| approximate R@3 higher is better | 0.160 | 0.160 |
+| approximate matching score lower is better | 5.0077 | 4.9591 |
+
+Interpretation:
+
+```text
+Fine-tuning slightly improves average duration, early-stop rate, root-path
+coverage, R@2 and matching score on N=100.  It ties R@1/R@3 and slightly
+worsens FID.  Therefore the robust conclusion is a partial semantic/rollout
+improvement, not paper-level dominance over the original baseline.
+```
+
+Artifacts:
+
+```text
+/tmp/stage1_humanml_test_long100_basehead_epoch3_batch_20260614
+/tmp/stage1_t2m_paper_metrics_humanml_test_long100_basehead_epoch3_20260614/summary.json
+stage1_artifacts/review_videos_20260614/long100_metrics/
+```
+
 ### Primary Val8 Result
 
 This is the clearest strict-protocol positive result and the best video
-showcase:
+showcase, but it should now be treated as a small-sample positive example:
 
 ```text
 checkpoint = /tmp/stage1_segment_aligned_bvh_native_200_basehead_seed13_3ep_20260614/checkpoint_epoch_3.pth

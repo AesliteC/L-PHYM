@@ -8982,3 +8982,172 @@ fine-tuned GPT beats baseline on several approximate paper-style metrics and
 video stability checks.  It still does not dominate every R-precision cutoff,
 and the evaluator route is approximate because MoConVQ BVHs are adapted to
 HumanML3D 22-joint / 263-d features and then truncated by the T2M evaluator.
+
+## 2026-06-14: HumanML3D-test Long100 larger-prompt evaluation
+
+### Purpose
+
+The previous Val8 and Val18 strict-prompt evaluations were useful but too small
+to be strongly convincing.  To test whether the apparent improvements survive a
+larger prompt set, I built an independent 100-prompt suite from the HumanML3D
+`test.txt` split.  Each prompt combines three held-out HumanML3D captions:
+
+```text
+test caption A then test caption B then test caption C
+segments_json = [A, B, C]
+segment_lengths = [25, 25, 25]
+```
+
+This keeps inference explicit and avoids naive `" then "` splitting.  It also
+avoids reusing the 18 validation long sequences from the training cache.
+
+Prompt artifacts:
+
+```text
+/tmp/stage1_humanml_test_long100_prompts_20260614.tsv
+/tmp/stage1_humanml_test_long100_prompts_20260614_summary.json
+stage1_artifacts/review_videos_20260614/long100_metrics/
+```
+
+### Batch generation support
+
+The original comparison runner starts a fresh Python process per prompt/model,
+which is too slow for 100 prompts because it repeatedly loads T5 and GPT.  I
+added:
+
+```text
+Script/stage1/batch_generate_long_motion.py
+```
+
+It:
+
+- loads the MoConVQ agent once;
+- pre-encodes all unique T5 text segments once;
+- loads baseline GPT once and generates all baseline BVHs;
+- loads the fine-tuned GPT once and generates all fine-tuned BVHs;
+- preserves the same segmented generation logic, progress conditioning and
+  seed protocol used by `generate_long_motion.py`.
+
+Smoke command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/batch_generate_long_motion.py \
+  --prompts /tmp/stage1_humanml_test_long2_prompts_20260614.tsv \
+  --output-dir /tmp/stage1_humanml_test_long2_batch_smoke_20260614 \
+  --baseline-checkpoint text_generation_GPT.pth \
+  --finetuned-checkpoint /tmp/stage1_segment_aligned_bvh_native_200_basehead_seed13_3ep_20260614/checkpoint_epoch_3.pth \
+  --base-data moconvq_base.data \
+  --motion-dataset simple_motion_data.h5 \
+  --text-encoder t5 \
+  --text-model /home/chenjie/cc/robotics/hf_models/t5-large \
+  --max-length 75 \
+  --generation-mode segmented \
+  --context-size 30 \
+  --chunk-size 20 \
+  --top-p 0.95 \
+  --temperature 1.0 \
+  --baseline-progress-conditioning none \
+  --progress-conditioning scalar \
+  --gpu 0 \
+  --seed 13
+```
+
+Smoke result:
+
+```text
+generated BVHs = 4
+test_long_000 baseline/fine-tuned frames = 1032 / 1032
+test_long_001 baseline/fine-tuned frames = 840 / 888
+```
+
+Full generation command used the same options on the 100-prompt TSV:
+
+```text
+/tmp/stage1_humanml_test_long100_basehead_epoch3_batch_20260614
+generated BVHs = 200
+```
+
+### Engineering metrics
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/evaluate_bvh_metrics.py \
+  /tmp/stage1_humanml_test_long100_basehead_epoch3_batch_20260614/bvh/*.bvh \
+  --output /tmp/stage1_humanml_test_long100_basehead_epoch3_batch_20260614/summary_metrics.json \
+  --sample-stride 6 \
+  --expected-min-frames 1200 \
+  --quiet
+```
+
+Result:
+
+| Metric | Baseline | Fine-tuned epoch3 |
+| --- | ---: | ---: |
+| samples | 100 | 100 |
+| avg frames | 1216.56 | 1230.96 |
+| early-stop rate | 0.44 | 0.41 |
+| root path | 3.3679 | 3.4323 |
+| pose velocity mean | 38.0968 | 37.5597 |
+
+Interpretation:
+
+```text
+Fine-tuned has slightly longer rollouts, slightly fewer early stops, slightly
+larger root-path coverage and slightly lower pose velocity.  This is a modest
+rollout-quality improvement, not a large visual-quality jump.
+```
+
+### Approximate T2M FID/R-precision
+
+Command:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python \
+  Script/stage1/evaluate_t2m_paper_metrics.py \
+  /tmp/stage1_humanml_test_long100_basehead_epoch3_batch_20260614/bvh/*.bvh \
+  --prompts /tmp/stage1_humanml_test_long100_basehead_epoch3_batch_20260614/prompts.tsv \
+  --humanml-root /home/chenjie/cc/robotics/HumanML3D/HumanML3D \
+  --evaluator-root /tmp/stage1_t2m_evaluator_assets \
+  --output-dir /tmp/stage1_t2m_paper_metrics_humanml_test_long100_basehead_epoch3_20260614 \
+  --summary /tmp/stage1_t2m_paper_metrics_humanml_test_long100_basehead_epoch3_20260614/summary.json \
+  --reference-split test \
+  --reference-limit 1000 \
+  --reference-seed 13 \
+  --gpu 0
+```
+
+Result:
+
+| Metric | Baseline | Fine-tuned epoch3 |
+| --- | ---: | ---: |
+| samples | 100 | 100 |
+| approximate FID lower is better | 7.0400 | 7.2092 |
+| approximate R@1 higher is better | 0.050 | 0.050 |
+| approximate R@2 higher is better | 0.110 | 0.140 |
+| approximate R@3 higher is better | 0.160 | 0.160 |
+| approximate matching score lower is better | 5.0077 | 4.9591 |
+
+Interpretation:
+
+```text
+The N=100 result is mixed.  Fine-tuning improves R@2 and matching score, ties
+R@1/R@3, and slightly worsens FID.  Therefore the more robust final claim is
+partial semantic/rollout improvement, not paper-metric dominance over baseline.
+```
+
+### Updated conclusion
+
+The smaller Val8/Val18 results remain useful for explaining the best-case
+visual examples and checkpoint trade-offs.  The larger HumanML3D-test Long100
+result should be used for the most honest metric statement:
+
+```text
+Stage1 has a working and reproducible HumanML3D -> MoConVQ -> fine-tuned GPT
+pipeline.  The fine-tuned model produces slightly better long-rollout behavior
+and improves R@2/matching on 100 held-out long prompts, but does not fully beat
+baseline on approximate paper metrics because FID is slightly worse and
+R@1/R@3 tie.
+```
