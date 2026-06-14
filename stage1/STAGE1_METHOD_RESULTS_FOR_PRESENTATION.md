@@ -32,7 +32,7 @@ stage1_artifacts/review_videos_20260614/long100_metrics/
 
 ### 1.1 最终最推荐展示的视频
 
-这两个是当前最适合 oral presentation 展示的 baseline vs fine-tuned side-by-side
+这三个是当前最适合 oral presentation 展示的 baseline vs fine-tuned side-by-side
 视频。它们来自最终主结果之一：
 
 ```text
@@ -44,10 +44,11 @@ suite      = Held-out Val8 strict protocol
 ```
 
 视频路径：
-
+/home/chenjie/cc/robotics/
 ```text
-/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val8_explicit_scaled75_compare_20260614/video/train_000057__baseline_vs_basehead.mp4
-/tmp/stage1_segment_aligned_bvh_native_200_basehead_epoch3_val8_explicit_scaled75_compare_20260614/video/train_000077__baseline_vs_basehead.mp4
+MoConVQ/stage1_artifacts/review_videos_20260614/comparison_videos_renamed/val8_existing/comparison_val8_epoch3_000018_baseline_vs_finetuned.mp4
+MoConVQ/stage1_artifacts/review_videos_20260614/comparison_videos_renamed/val8_existing/comparison_val8_epoch3_000057_baseline_vs_finetuned.mp4
+MoConVQ/stage1_artifacts/review_videos_20260614/comparison_videos_renamed/val8_existing/comparison_val8_epoch3_000077_baseline_vs_finetuned.mp4
 ```
 
 对应 contact sheet：

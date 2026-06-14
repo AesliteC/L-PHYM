@@ -2,11 +2,12 @@
 
 Date: 2026-06-14
 
-This file is the report-facing summary for Stage1.  Full diagnostic history is
-kept in `STAGE1_EXPERIMENT_LOG.md`; implementation and reproduction notes are
-kept in `STAGE1_README.md`.  A fuller presentation/report draft with methods,
-intermediate experiments, final metrics and video paths is available in
-`STAGE1_METHOD_RESULTS_FOR_PRESENTATION.md`.
+This file is the report-facing summary for Stage1.  It includes the final
+result plus the key intermediate experiments that determined the final route.
+Full diagnostic history is kept in `STAGE1_EXPERIMENT_LOG.md`; implementation
+and reproduction notes are kept in `STAGE1_README.md`.  A fuller
+presentation/report draft with methods, intermediate experiments, final metrics
+and video paths is available in `STAGE1_METHOD_RESULTS_FOR_PRESENTATION.md`.
 
 ## Goal Status
 
@@ -117,6 +118,43 @@ Result:
 
 ```text
 num_prompts = 18
+```
+
+## Intermediate Experiments And Decisions
+
+The central Stage1 finding was that long-sequence text synthesis alone was not
+enough.  The dominant failure mode was how HumanML3D motion was mapped into the
+MoConVQ simulator character state, observation space and RVQ token space.  The
+experiments below explain why the final route uses HumanML3D-derived BVH plus
+MoConVQ-native retargeting instead of the original hand-written cache.
+
+| Experiment / Route | Purpose | Key Result | Decision |
+| --- | --- | --- | --- |
+| Fixed HumanML3D long dataset with hand-written retarget | First end-to-end long-text cache and GPT fine-tune | 1000 train / 200 val sequences; cache had 2958 train windows and 598 val windows. Token training looked strong: train loss 1.6198, val loss 1.7807, train acc 0.5569, val acc 0.5236. | Rejected for final claim because video quality and token diagnostics did not match the good loss. |
+| Training-target repair on old cache | Align GPT training target with inference latent usage | Changed target to previous reconstructed 4-layer RVQ latent -> current RVQ indices; added train scopes, KL/teacher options, end-token auxiliary loss and progress conditioning. | Kept the code fixes, but old data still had unhealthy token distribution. |
+| Old-cache token and observation diagnostics | Check whether the old cache represented MoConVQ body state correctly | Depth0 top token fraction reached 0.2171 and depth1 reached 0.3342, far above native MoConVQ reference behavior. | Identified HumanML3D-to-MoConVQ body-state mapping as the main bottleneck. |
+| Rest-pose / rotation calibration | Reduce obvious skeleton-frame mismatch in the hand-written mapping | Improved some local-rotation outliers, but angular velocity and retarget distribution mismatch remained. | Not sufficient as a final data route. |
+| Caption granularity / atomic-caption diagnosis | Test whether HumanML3D captions were too composite for segment training | Prefer-atomic captions reduced non-atomic captions to about 8 percent, but token collapse remained: atomic cache depth0 top fractions still included 22.69 percent and 11.79 percent tokens. | Caption cleaning alone cannot fix the mapping problem. |
+| Segment-prefix / progress conditioning | Make training resemble segmented long-text inference | Added prefix motion context plus local segment caption, segment progress features and segmented generation. | Kept as part of the final method, but it needed a healthier motion cache. |
+| MoConVQ native BVH-to-character smoke | Verify that original MoConVQ retarget path can produce GPT cache | `base.bvh`: 1 window, 16 valid tokens, index range 27..489. `track.bvh`: 4 windows, 800 valid tokens, index range 3..511. Track smoke training: train loss 7.6435, val loss 7.8137, train acc 0.0050, val acc 0.0175. | Native BVH retarget path works; local BVH files were too few for final fine-tuning. |
+| Batch500 processed HumanML3D -> BVH | Test HumanML3D -> BVH -> native retarget at a larger scale | Accepted 72 train / 18 val sequences from filtered Batch500. Token distribution no longer showed the extreme old-cache collapse. Base-head 5 epoch training reached about train loss 4.8432, val loss 4.8578, train acc 0.1516, val acc 0.1492. | Validated the replacement data route, but data scale and export quality were still limited. |
+| Long-H5 BVH-native 200 sequence route | Build a more coherent long-sequence BVH-native cache | 20-smoke accepted top fractions were depth0 0.0583, depth1 0.0354, depth2 0.0500, depth3 0.0800. Full run accepted 481 train windows / 120 val windows, 87,472 / 21,592 valid tokens, 73 / 18 unique train/val sequences. | Became the basis for the final segment-aligned cache. |
+| Paper-metric readiness audit | Check whether MoConVQ paper Text2Motion metrics can be computed | Original HumanML3D evaluator assets were not fully native to this repo. Implemented an approximate BVH-to-HumanML3D 22-joint / 263-d adapter and evaluator route. | Use FID, R-precision and matching score as approximate evaluator-adapter metrics, with caveats. |
+| Segment-aligned final cache | Align training examples with long-prompt segment boundaries | Final selected cache: 476 train windows, 117 val windows, 85,328 / 20,756 valid tokens, 73 / 18 train/val long sequences. Token top fractions: depth0 0.0566, depth1 0.0247, depth2 0.0479, depth3 0.0700. | Selected as final training data. |
+| Explicit segment protocol | Remove inference-time ambiguity from raw `" then "` splitting | Exported `segments_json` and `segment_lengths` directly from cache metadata. This avoids splitting sentence-internal words such as "then" inside HumanML3D captions. | Required for fair training/inference consistency. |
+| Head-only segment-aligned fine-tune | Check whether only adapting the GPT head is enough | Under strict explicit segment and scaled-length protocol, head-only improved some R-precision/matching signals but did not reliably improve FID and had worse early-stop behavior. | Head-only was under-capacity for the final strict protocol. |
+| Base-head micro fine-tune | Allow limited adaptation of base plus head on the final cache | Selected run used `base_head`, lr 5e-6 and 3 epochs. It reduced val loss from 14.9117 to 10.7311 and gave the strongest strict Val8 result. | Selected as final fine-tuned model family. |
+| Decoding sweep | Test whether lower entropy sampling improves the final model | `top_p=0.90`, `temperature=0.8` was negative: baseline FID/R@1/R@2/R@3/matching = 13.2935 / 0.3333 / 0.4444 / 0.5556 / 4.8050; fine-tuned = 14.3544 / 0.2778 / 0.3889 / 0.5000 / 4.8366. | Keep `top_p=0.95`, `temperature=1.0` for final comparison. |
+| HumanML3D-test Long100 evaluation | Move beyond small Val8/Val18 checks | On 100 held-out three-segment prompts, fine-tuning improved R@2, matching score, average length, early-stop rate and root path; it tied R@1/R@3 and slightly worsened FID. | Final claim must be partial improvement, not full paper-metric dominance. |
+
+Report-facing interpretation:
+
+```text
+Early token-level improvements were rejected after video, token-distribution
+and observation-space diagnostics.  The main technical result is the working
+HumanML3D -> BVH -> MoConVQ-native character retarget -> segment-aligned GPT
+cache pipeline.  The final model improves some long-prompt metrics and videos,
+but does not uniformly beat baseline on all approximate paper-style metrics.
 ```
 
 ## Selected Results
