@@ -5,6 +5,8 @@
 报告级最终摘要见 `STAGE1_FINAL_RESULT_SUMMARY.md`。该摘要只保留最终 pipeline、
 selected checkpoints、主要 FID/R-precision 表格、视频结论和 evaluator caveat；
 完整诊断过程仍记录在 `STAGE1_EXPERIMENT_LOG.md`。
+用于检查、oral presentation 和最终报告写作的完整方法/过程/结果汇总见
+`STAGE1_METHOD_RESULTS_FOR_PRESENTATION.md`。
 
 ## 1. 仓库目的
 

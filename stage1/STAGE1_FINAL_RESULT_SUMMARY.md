@@ -4,7 +4,9 @@ Date: 2026-06-14
 
 This file is the report-facing summary for Stage1.  Full diagnostic history is
 kept in `STAGE1_EXPERIMENT_LOG.md`; implementation and reproduction notes are
-kept in `STAGE1_README.md`.
+kept in `STAGE1_README.md`.  A fuller presentation/report draft with methods,
+intermediate experiments, final metrics and video paths is available in
+`STAGE1_METHOD_RESULTS_FOR_PRESENTATION.md`.
 
 ## Goal Status
 
@@ -341,4 +343,3 @@ AGENT.md, AGENTS.md, CODEX.md, CLAUDE.md, .codex/, .claude/
 stage1_artifacts/, *.h5, *.pth, *.data, *.npy, *.zip, *.tar, *.pkl, *.pt,
 *.mp4, *.png, midterm-report/, midterm_figures/, request.txt
 ```
-
