@@ -1,6 +1,6 @@
 # Stage1 方法论、过程实验与最终结果汇总
 
-更新时间：2026-06-14
+更新时间：2026-06-15
 
 用途：给检查、oral presentation 和最终实验报告使用。本文档把 Stage1 从旧路线失败、
 诊断、修复、备选路线、最终主结果到视频/指标证据统一整理。完整逐条日志仍见
@@ -12,19 +12,31 @@
 视频和 contact sheet 没有 push 到 GitHub，因为它们属于生成 artifact，按仓库卫生
 规则不提交 `.mp4` / `.png`。当前主要保存在 `/tmp`。
 
-本地审阅包已经复制到工作目录：
+最新本地审阅包已经复制到工作目录：
 
 ```text
-stage1_artifacts/review_videos_20260614/
+stage1_artifacts/review_videos_20260615/clean_labels/
 ```
 
-其中重新命名的 comparison 视频和每个视频对应的 prompt 在：
+其中 clean-label comparison 视频和每个视频对应的 prompt 在：
 
 ```text
-stage1_artifacts/review_videos_20260614/comparison_videos_renamed/MANIFEST.md
+stage1_artifacts/review_videos_20260615/clean_labels/MANIFEST.md
 ```
 
-N=100 大样本指标和 prompt 文件在：
+这个 2026-06-15 包包含 18 个 baseline vs fine-tuned side-by-side MP4：
+
+```text
+3 个 Val8 epoch3 showcase
+3 个 Val18 epoch2 conservative showcase
+12 个从 HumanML3D-test Long100 中按工程指标自动筛出的候选
+```
+
+这些视频没有截断时长，长度由各自 BVH 实际帧数决定。视频文件名和左上角渲染标签
+不再显示 HumanML3D 内部 split 前缀，而是使用 `prompt_057` / `long100_089`
+这类 clean id。
+
+N=100 大样本指标和 prompt 文件仍保留在：
 
 ```text
 stage1_artifacts/review_videos_20260614/long100_metrics/
@@ -44,11 +56,11 @@ suite      = Held-out Val8 strict protocol
 ```
 
 视频路径：
-/home/chenjie/cc/robotics/
+
 ```text
-MoConVQ/stage1_artifacts/review_videos_20260614/comparison_videos_renamed/val8_existing/comparison_val8_epoch3_000018_baseline_vs_finetuned.mp4
-MoConVQ/stage1_artifacts/review_videos_20260614/comparison_videos_renamed/val8_existing/comparison_val8_epoch3_000057_baseline_vs_finetuned.mp4
-MoConVQ/stage1_artifacts/review_videos_20260614/comparison_videos_renamed/val8_existing/comparison_val8_epoch3_000077_baseline_vs_finetuned.mp4
+stage1_artifacts/review_videos_20260615/clean_labels/comparison_videos/val8_epoch3/comparison_val8_epoch3_prompt_018_baseline_vs_finetuned.mp4
+stage1_artifacts/review_videos_20260615/clean_labels/comparison_videos/val8_epoch3/comparison_val8_epoch3_prompt_057_baseline_vs_finetuned.mp4
+stage1_artifacts/review_videos_20260615/clean_labels/comparison_videos/val8_epoch3/comparison_val8_epoch3_prompt_077_baseline_vs_finetuned.mp4
 ```
 
 对应 contact sheet：
@@ -58,12 +70,12 @@ MoConVQ/stage1_artifacts/review_videos_20260614/comparison_videos_renamed/val8_e
 ```
 
 视频结论：没有空帧、整体倒置、骨架爆炸。fine-tuned 通常更能持续运动，root/path
-coverage 更大。`train_000077` 是较好的展示样例，低姿态/蹲跪动作没有马上崩掉。
+coverage 更大。`prompt_077` 是较好的展示样例，低姿态/蹲跪动作没有马上崩掉。
 但仍有动作语义细节不稳定和姿态不自然的问题。
 
-注意：这些视频的原始样本名里有 `train_000057` 等字符串，是 HumanML3D 风格
-sample id，不表示指标是在训练损失上评估。新的本地视频包已统一重命名为
-`comparison_*.mp4`。
+注意：早期视频文件名里曾出现 HumanML3D 内部 split/sample id，容易误解成训练集
+指标。2026-06-15 clean-label 包已经重新渲染，视频文件名和画面左上角标签都使用
+`prompt_*.mp4` / `long100_*.mp4`。
 
 ### 1.2 最终 Val18 静态可视化
 

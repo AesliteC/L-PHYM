@@ -3,7 +3,9 @@ import unittest
 import numpy as np
 
 from Script.stage1.make_bvh_contact_sheet import select_quality_rows
-from Script.stage1.render_bvh_to_mp4 import root_motion_display_positions
+from pathlib import Path
+
+from Script.stage1.render_bvh_to_mp4 import display_label_for_bvh, root_motion_display_positions
 
 
 class Stage1RenderBVHTests(unittest.TestCase):
@@ -17,6 +19,22 @@ class Stage1RenderBVHTests(unittest.TestCase):
         world = root_motion_display_positions(sampled, keep_root_motion=True)
 
         np.testing.assert_array_equal(world, sampled)
+
+    def test_display_label_hides_humanml3d_train_prefix(self):
+        label = display_label_for_bvh(Path("train_000057__baseline_top_p.bvh"))
+
+        self.assertEqual(label, "Prompt 057 | Baseline")
+        self.assertNotIn("train", label.lower())
+
+    def test_display_label_formats_long100_prompt(self):
+        label = display_label_for_bvh(Path("test_long_012__finetuned_top_p.bvh"))
+
+        self.assertEqual(label, "Long100 012 | Fine-tuned")
+
+    def test_display_label_formats_clean_prompt_name(self):
+        label = display_label_for_bvh(Path("prompt_099__finetuned_top_p.bvh"))
+
+        self.assertEqual(label, "Prompt 099 | Fine-tuned")
 
     def test_contact_sheet_selects_limited_accepted_and_rejected_rows(self):
         payload = {

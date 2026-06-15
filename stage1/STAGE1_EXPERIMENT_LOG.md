@@ -9151,3 +9151,114 @@ and improves R@2/matching on 100 held-out long prompts, but does not fully beat
 baseline on approximate paper metrics because FID is slightly worse and
 R@1/R@3 tie.
 ```
+
+## 2026-06-15: Clean-label full-length comparison video pack
+
+The earlier review videos were already renamed on disk, but the rendered
+upper-left label still came from the BVH file stem.  For validation-cache prompts
+that stem could contain the HumanML3D internal split prefix, which was confusing
+in presentation videos.
+
+### Code changes
+
+Added display-label sanitization to:
+
+```text
+Script/stage1/render_bvh_to_mp4.py
+```
+
+Examples:
+
+```text
+train_000057__baseline_top_p.bvh    -> Prompt 057 | Baseline
+prompt_099__finetuned_top_p.bvh     -> Prompt 099 | Fine-tuned
+test_long_012__finetuned_top_p.bvh  -> Long100 012 | Fine-tuned
+```
+
+Also added:
+
+```text
+Script/stage1/build_clean_comparison_video_pack.py
+```
+
+This script copies already generated BVHs into clean local names, renders
+individual baseline/fine-tuned MP4s, makes side-by-side comparison videos, probes
+the MP4s with ffprobe, and writes a prompt/metric manifest.
+
+### Generated local review pack
+
+Output:
+
+```text
+stage1_artifacts/review_videos_20260615/clean_labels/
+```
+
+The generated pack contains:
+
+```text
+18 comparison videos
+36 individual videos
+clean BVH copies for traceable re-rendering
+MANIFEST.md
+manifest.json
+```
+
+Prompt suites:
+
+```text
+Val8 epoch3:  prompt_018, prompt_057, prompt_077
+Val18 epoch2: prompt_018, prompt_099, prompt_144
+Long100:      long100_089, long100_007, long100_096, long100_014,
+              long100_024, long100_097, long100_082, long100_043,
+              long100_098, long100_041, long100_071, long100_054
+```
+
+The Long100 candidates were selected automatically from the existing N=100 BVH
+metrics by favoring larger fine-tuned frame/root-path gains and penalizing cases
+where fine-tuning worsened early stopping.  This is only a video-review
+selection heuristic; it does not replace the full N=100 metric table.
+
+Important rendering detail:
+
+```text
+No max-video-frame limit was used.  Video duration is determined by each source
+BVH's actual generated length.
+```
+
+Manifest:
+
+```text
+stage1_artifacts/review_videos_20260615/clean_labels/MANIFEST.md
+```
+
+The manifest lists each video path, prompt text, baseline/fine-tuned frames,
+root path and early-stop status.  The local pack size is about 56 MB.
+
+### Verification
+
+Commands:
+
+```bash
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m py_compile \
+  Script/stage1/build_clean_comparison_video_pack.py \
+  Script/stage1/render_bvh_to_mp4.py
+
+/home/chenjie/miniconda3/envs/moconvq/bin/python -m unittest \
+  tests.test_stage1_render_bvh \
+  tests.test_stage1_text_gpt_comparison \
+  -v
+```
+
+Result:
+
+```text
+8 tests passed
+```
+
+Additional checks:
+
+```text
+comparison MP4 count = 18
+review pack size = 56M
+MANIFEST.md no longer exposes the internal HumanML3D split prefix
+```

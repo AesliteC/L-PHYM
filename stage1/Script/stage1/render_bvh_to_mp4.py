@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 import argparse
 import math
+import re
+import shutil
 import subprocess
+import sys
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -123,6 +126,44 @@ def root_motion_display_positions(sampled: np.ndarray, keep_root_motion: bool) -
     return relative
 
 
+def display_label_for_bvh(path: Path) -> str:
+    """Return a review-facing label that hides HumanML3D split prefixes."""
+    stem = path.stem
+    prompt_name, model_name = stem, ""
+    if "__" in stem:
+        prompt_name, model_name = stem.rsplit("__", 1)
+
+    prompt_match = re.fullmatch(r"(?:train|val|prompt)_0*([0-9]+)", prompt_name)
+    if prompt_match:
+        prompt_label = f"Prompt {int(prompt_match.group(1)):03d}"
+    else:
+        long_match = re.fullmatch(r"(?:test_long|long100)_0*([0-9]+)", prompt_name)
+        if long_match:
+            prompt_label = f"Long100 {int(long_match.group(1)):03d}"
+        else:
+            prompt_label = prompt_name.replace("_", " ").strip().title() or "Prompt"
+
+    model_labels = {
+        "baseline": "Baseline",
+        "baseline_top_p": "Baseline",
+        "finetuned": "Fine-tuned",
+        "finetuned_top_p": "Fine-tuned",
+        "basehead": "Fine-tuned",
+    }
+    model_label = model_labels.get(model_name, model_name.replace("_", " ").strip().title())
+    return f"{prompt_label} | {model_label}" if model_label else prompt_label
+
+
+def resolve_executable(name: str) -> str:
+    resolved = shutil.which(name)
+    if resolved:
+        return resolved
+    local = Path(sys.executable).resolve().parent / name
+    if local.exists():
+        return str(local)
+    return name
+
+
 def render_bvh_to_mp4(
     src: Path,
     dst: Path,
@@ -132,6 +173,7 @@ def render_bvh_to_mp4(
     height: int,
     max_video_frames: int | None,
     keep_root_motion: bool,
+    display_label: str | None = None,
 ) -> None:
     nodes, data, frame_time = parse_bvh(src)
     src_fps = 1.0 / frame_time if frame_time > 0 else 120.0
@@ -159,10 +201,11 @@ def render_bvh_to_mp4(
     center = (min_xy + max_xy) / 2.0
     edges = [(node_id, node.parent) for node_id, node in enumerate(nodes) if node.parent is not None]
     font = ImageFont.load_default()
+    label = display_label if display_label is not None else display_label_for_bvh(src)
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        ffmpeg,
+        resolve_executable(ffmpeg),
         "-y",
         "-v",
         "error",
@@ -206,7 +249,7 @@ def render_bvh_to_mp4(
             draw.ellipse((x - 3, y - 3, x + 3, y + 3), fill=(170, 45, 45))
 
         seconds = bvh_frame_id * frame_time
-        draw.text((20, 18), src.name, fill=(20, 20, 20), font=font)
+        draw.text((20, 18), label, fill=(20, 20, 20), font=font)
         draw.text((20, 38), f"frame {bvh_frame_id + 1}/{len(data)}  time {seconds:0.2f}s", fill=(20, 20, 20), font=font)
         image.save(proc.stdin, format="PNG")
 
@@ -230,6 +273,11 @@ def main() -> None:
     parser.add_argument("--width", type=int, default=960)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--max-video-frames", type=int, default=None)
+    parser.add_argument(
+        "--display-label",
+        default=None,
+        help="Optional label to draw in the upper-left corner when rendering a single BVH file.",
+    )
     parser.add_argument(
         "--keep-root-motion",
         "--world-space",
@@ -262,6 +310,7 @@ def main() -> None:
             height=args.height,
             max_video_frames=args.max_video_frames,
             keep_root_motion=args.keep_root_motion,
+            display_label=args.display_label if len(sources) == 1 else None,
         )
 
 
