@@ -1,0 +1,1519 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>L-PHYM 结果展示 | 两阶段长时序语言驱动物理运动控制</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #11120f;
+      --ink-2: #2b2d28;
+      --muted: #68706a;
+      --line: #d9ded8;
+      --paper: #f6f8f4;
+      --white: #ffffff;
+      --green: #1d766a;
+      --green-dark: #10584f;
+      --copper: #b9582b;
+      --gold: #c99b35;
+      --red: #b54335;
+      --blue: #315d86;
+      --shadow: 0 24px 70px rgba(17, 18, 15, 0.16);
+      --radius: 8px;
+      --max: 1180px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family:
+        Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      letter-spacing: 0;
+    }
+
+    img,
+    video {
+      display: block;
+      max-width: 100%;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      background: rgba(246, 248, 244, 0.92);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid rgba(17, 18, 15, 0.08);
+    }
+
+    .nav {
+      width: min(var(--max), calc(100% - 40px));
+      margin: 0 auto;
+      min-height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+      font-weight: 760;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background:
+        linear-gradient(135deg, var(--green) 0 48%, var(--copper) 49% 100%);
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+      flex: 0 0 auto;
+    }
+
+    .brand span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      color: #3d443e;
+      font-size: 14px;
+    }
+
+    .nav-links a {
+      padding: 10px 12px;
+      border-radius: 8px;
+    }
+
+    .nav-links a:hover {
+      background: rgba(29, 118, 106, 0.1);
+      color: var(--green-dark);
+    }
+
+    .hero {
+      background: #11120f;
+      color: #f8f7ef;
+      min-height: calc(100svh - 64px);
+      display: flex;
+      align-items: center;
+      border-bottom: 1px solid rgba(17, 18, 15, 0.2);
+    }
+
+    .hero-inner {
+      width: min(1260px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: clamp(40px, 6vw, 78px) 0;
+      display: grid;
+      grid-template-columns: minmax(330px, 0.78fr) minmax(500px, 1.22fr);
+      gap: clamp(26px, 4.5vw, 58px);
+      align-items: center;
+    }
+
+    .hero-title-block {
+      grid-column: 1 / -1;
+      max-width: 1180px;
+    }
+
+    .eyebrow {
+      margin: 0 0 18px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      color: #d8ddce;
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      white-space: nowrap;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 720px;
+      font-size: clamp(40px, 7.3vw, 82px);
+      line-height: 0.98;
+      letter-spacing: 0;
+      font-weight: 820;
+    }
+
+    .hero-title-block h1 {
+      max-width: none;
+      white-space: nowrap;
+      font-size: clamp(42px, 5.2vw, 72px);
+    }
+
+    .lead {
+      margin: 24px 0 0;
+      max-width: 660px;
+      color: #d9ded4;
+      font-size: clamp(17px, 2.2vw, 22px);
+      line-height: 1.68;
+    }
+
+    .hero-actions {
+      margin-top: 34px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .btn {
+      min-height: 44px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 11px 16px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      font-weight: 760;
+      transition: transform 160ms ease, background 160ms ease, border-color 160ms ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      background: #f2c457;
+      color: #12120f;
+      border-color: rgba(242, 196, 87, 0.4);
+    }
+
+    .btn-secondary {
+      color: #f8f7ef;
+      border-color: rgba(255, 255, 255, 0.24);
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .hero-stats {
+      margin-top: 36px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      max-width: 620px;
+    }
+
+    .hero-stat {
+      padding: 16px 14px;
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .hero-stat strong {
+      display: block;
+      font-size: clamp(22px, 3vw, 31px);
+      line-height: 1;
+      color: #ffffff;
+    }
+
+    .hero-stat span {
+      display: block;
+      margin-top: 8px;
+      color: #c7ccbf;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .hero-media {
+      position: relative;
+      min-width: 0;
+    }
+
+    .hero-video-shell {
+      background: #050505;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-video-shell video {
+      width: 100%;
+      aspect-ratio: 8 / 3;
+      object-fit: cover;
+      background: #080808;
+    }
+
+    .media-caption {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      min-height: 56px;
+      padding: 12px 14px;
+      background: #191a16;
+      color: #e5eadf;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .caption-title {
+      font-weight: 760;
+      color: #ffffff;
+    }
+
+    .caption-sub {
+      color: #c5cbbf;
+    }
+
+    .compare-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #f7f7f0;
+      white-space: nowrap;
+      font-weight: 760;
+    }
+
+    .compare-badge::before,
+    .compare-badge::after {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .compare-badge::before {
+      background: var(--blue);
+    }
+
+    .compare-badge::after {
+      background: var(--copper);
+    }
+
+    .section {
+      padding: clamp(52px, 8vw, 92px) 0;
+      border-bottom: 1px solid rgba(17, 18, 15, 0.08);
+    }
+
+    .section.alt {
+      background: #ffffff;
+    }
+
+    .section.dark {
+      background: #1a1b17;
+      color: #f3f4ec;
+      border-bottom-color: rgba(255, 255, 255, 0.1);
+    }
+
+    .wrap {
+      width: min(var(--max), calc(100% - 40px));
+      margin: 0 auto;
+    }
+
+    .section-head {
+      max-width: 790px;
+      margin-bottom: 30px;
+    }
+
+    .section-kicker {
+      margin: 0 0 10px;
+      color: var(--green-dark);
+      font-size: 13px;
+      font-weight: 820;
+      text-transform: uppercase;
+    }
+
+    .dark .section-kicker {
+      color: #87d6c7;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(29px, 4.2vw, 50px);
+      line-height: 1.08;
+      letter-spacing: 0;
+      font-weight: 820;
+    }
+
+    .section-copy {
+      margin: 16px 0 0;
+      color: var(--muted);
+      font-size: 17px;
+      line-height: 1.72;
+    }
+
+    .dark .section-copy {
+      color: #cbd1c7;
+    }
+
+    .result-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .result-card {
+      min-height: 174px;
+      padding: 22px;
+      border-radius: 8px;
+      background: var(--white);
+      border: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .result-card strong {
+      display: block;
+      font-size: clamp(27px, 3.4vw, 42px);
+      line-height: 1;
+      letter-spacing: 0;
+      color: var(--ink);
+    }
+
+    .result-card span {
+      display: block;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .result-card .tag {
+      align-self: flex-start;
+      margin: 0 0 18px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      color: var(--green-dark);
+      background: rgba(29, 118, 106, 0.1);
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .video-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 0.68fr) minmax(0, 1.32fr);
+      gap: 24px;
+      align-items: start;
+    }
+
+    .video-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .video-tab {
+      width: 100%;
+      min-height: 64px;
+      padding: 12px;
+      text-align: left;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      color: var(--ink);
+      cursor: pointer;
+      transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+    }
+
+    .video-tab:hover {
+      transform: translateY(-1px);
+      border-color: rgba(29, 118, 106, 0.45);
+    }
+
+    .video-tab[aria-selected="true"] {
+      background: #f0f7f3;
+      border-color: var(--green);
+      box-shadow: inset 4px 0 0 var(--green);
+    }
+
+    .video-tab small {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 760;
+      text-transform: uppercase;
+    }
+
+    .video-tab span {
+      display: block;
+      margin-top: 5px;
+      font-weight: 760;
+      line-height: 1.35;
+    }
+
+    .player {
+      background: #0c0d0b;
+      border-radius: 8px;
+      overflow: hidden;
+      border: 1px solid rgba(17, 18, 15, 0.16);
+      box-shadow: var(--shadow);
+    }
+
+    .player video {
+      width: 100%;
+      aspect-ratio: 8 / 3;
+      object-fit: contain;
+      background: #050505;
+    }
+
+    .player-info {
+      padding: 18px;
+      background: #171814;
+      color: #f0f2ea;
+    }
+
+    .player-info h3 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .prompt {
+      margin: 12px 0 0;
+      color: #ced4c9;
+      line-height: 1.62;
+      font-size: 15px;
+    }
+
+    .sample-metrics {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .sample-metric {
+      padding: 11px 12px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .sample-metric span {
+      display: block;
+      color: #aeb7aa;
+      font-size: 12px;
+      margin-bottom: 5px;
+    }
+
+    .sample-metric strong {
+      color: #ffffff;
+      font-size: 15px;
+      line-height: 1.2;
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+
+    .table-wrap {
+      overflow: visible;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 0;
+      table-layout: fixed;
+    }
+
+    th,
+    td {
+      padding: 13px 12px;
+      border-bottom: 1px solid #e5e9e2;
+      text-align: right;
+      font-size: 13px;
+      vertical-align: middle;
+      overflow-wrap: anywhere;
+    }
+
+    th:first-child,
+    td:first-child {
+      text-align: left;
+      color: var(--ink);
+      font-weight: 760;
+    }
+
+    th {
+      color: #555e57;
+      background: #f4f7f2;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+
+    th:nth-child(1),
+    td:nth-child(1) {
+      width: 32%;
+    }
+
+    th:nth-child(2),
+    td:nth-child(2) {
+      width: 17%;
+    }
+
+    th:nth-child(3),
+    td:nth-child(3),
+    th:nth-child(4),
+    td:nth-child(4) {
+      width: 16%;
+    }
+
+    th:nth-child(5),
+    td:nth-child(5) {
+      width: 19%;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .up {
+      color: var(--green-dark);
+      font-weight: 820;
+    }
+
+    .down {
+      color: var(--red);
+      font-weight: 820;
+    }
+
+    .flat {
+      color: var(--blue);
+      font-weight: 820;
+    }
+
+    .note-box {
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #ffffff;
+      padding: 20px;
+    }
+
+    .note-box h3,
+    .image-card h3 {
+      margin: 0 0 12px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .note-box p,
+    .note-box li {
+      color: var(--muted);
+      line-height: 1.65;
+      font-size: 15px;
+    }
+
+    .note-box p {
+      margin: 0 0 14px;
+    }
+
+    .note-box ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+
+    .bar-list {
+      display: grid;
+      gap: 16px;
+    }
+
+    .bar-row {
+      display: grid;
+      gap: 8px;
+    }
+
+    .bar-label {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      color: #343a35;
+      font-size: 14px;
+      font-weight: 760;
+    }
+
+    .bar-track {
+      height: 10px;
+      border-radius: 999px;
+      background: #e4e9e3;
+      overflow: hidden;
+    }
+
+    .bar-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: var(--green);
+    }
+
+    .bar-fill.copper {
+      background: var(--copper);
+    }
+
+    .bar-fill.blue {
+      background: var(--blue);
+    }
+
+    .method-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.05fr) minmax(330px, 0.95fr);
+      gap: 24px;
+      align-items: start;
+    }
+
+    .image-card {
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .image-card img {
+      width: 100%;
+      background: #f2f4ef;
+    }
+
+    .image-card .image-copy {
+      padding: 16px 18px 18px;
+    }
+
+    .image-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.62;
+      font-size: 15px;
+    }
+
+    .pipeline {
+      display: grid;
+      gap: 10px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 42px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+      padding: 14px;
+      border-radius: 8px;
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    .step-index {
+      width: 42px;
+      height: 42px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: #f2c457;
+      color: #151512;
+      font-weight: 860;
+    }
+
+    .step h3 {
+      margin: 0 0 5px;
+      font-size: 17px;
+      color: #ffffff;
+    }
+
+    .step p {
+      margin: 0;
+      color: #cbd2c6;
+      line-height: 1.56;
+      font-size: 14px;
+    }
+
+    .gallery {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+
+    .gallery .image-card img {
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+    }
+
+    .stage2-video-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin-top: 24px;
+    }
+
+    .stage2-video-card {
+      background: #ffffff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 16px 44px rgba(17, 18, 15, 0.08);
+    }
+
+    .stage2-video-card video {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      object-fit: contain;
+      background: #060706;
+    }
+
+    .stage2-video-copy {
+      padding: 16px 18px 18px;
+    }
+
+    .stage2-video-copy h3 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      line-height: 1.32;
+      letter-spacing: 0;
+    }
+
+    .stage2-video-copy p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.62;
+      font-size: 15px;
+    }
+
+    .status-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 26px;
+      padding: 5px 9px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 820;
+      background: rgba(29, 118, 106, 0.1);
+      color: var(--green-dark);
+    }
+
+    .stage-bridge {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 24px;
+    }
+
+    .bridge-step {
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #ffffff;
+      min-height: 120px;
+    }
+
+    .bridge-step strong {
+      display: block;
+      color: var(--ink);
+      font-size: 15px;
+      line-height: 1.35;
+      margin-bottom: 8px;
+    }
+
+    .bridge-step span {
+      display: block;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .paths {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .path-card {
+      padding: 18px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #ffffff;
+      min-width: 0;
+    }
+
+    .path-card h3 {
+      margin: 0 0 10px;
+      font-size: 17px;
+    }
+
+    code {
+      color: #23332f;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 13px;
+      overflow-wrap: anywhere;
+      line-height: 1.55;
+    }
+
+    .footer {
+      padding: 28px 0;
+      background: #11120f;
+      color: #cdd4c8;
+      font-size: 14px;
+    }
+
+    .footer .wrap {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 980px) {
+      .hero {
+        min-height: auto;
+      }
+
+      .hero-inner,
+      .video-layout,
+      .metrics-grid,
+      .method-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-media {
+        order: -1;
+      }
+
+      .result-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .stage-bridge {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .video-list {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 720px) {
+      .nav {
+        width: min(100% - 28px, var(--max));
+      }
+
+      .nav-links {
+        display: none;
+      }
+
+      .hero-inner,
+      .wrap {
+        width: min(100% - 28px, var(--max));
+      }
+
+      .hero-stats,
+      .result-grid,
+      .sample-metrics,
+      .gallery,
+      .stage2-video-grid,
+      .stage-bridge,
+      .paths,
+      .video-list {
+        grid-template-columns: 1fr;
+      }
+
+      h1 {
+        font-size: clamp(38px, 12vw, 54px);
+      }
+
+      .hero-title-block h1 {
+        white-space: normal;
+        font-size: clamp(38px, 12vw, 54px);
+      }
+
+      .hero-video-shell video,
+      .player video {
+        aspect-ratio: 16 / 9;
+      }
+
+      .media-caption {
+        grid-template-columns: 1fr;
+      }
+
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <nav class="nav" aria-label="主导航">
+      <a class="brand" href="#top" aria-label="返回顶部">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span>L-PHYM Project Showcase</span>
+      </a>
+      <div class="nav-links">
+        <a href="#results">结果</a>
+        <a href="#stage1">Stage1</a>
+        <a href="#stage2">Stage2</a>
+        <a href="#videos">视频</a>
+        <a href="#metrics">指标</a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-inner">
+        <div class="hero-title-block">
+          <p class="eyebrow">
+            <span class="pill">L-PHYM</span>
+            <span class="pill">Stage1 + Stage2</span>
+            <span class="pill">Final Presentation</span>
+          </p>
+          <h1 id="hero-title">长时序语言驱动物理运动控制</h1>
+        </div>
+
+        <div class="hero-copy">
+          <p class="lead">
+            本展示页汇总完整两阶段系统：Stage1 将长文本提示生成可审阅的长时序人体动作，
+            Stage2 将这些 kinematic references 转换、重定向并训练 H1 humanoid 的物理跟踪控制。
+          </p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="#stage1">查看 Stage1 结果</a>
+            <a class="btn btn-secondary" href="#stage2">查看 Stage2 视频</a>
+          </div>
+          <div class="hero-stats" aria-label="项目关键数字">
+            <div class="hero-stat">
+              <strong>100</strong>
+              <span>HumanML3D-test Long100 独立三段长文本提示</span>
+            </div>
+            <div class="hero-stat">
+              <strong>22.5x</strong>
+              <span>Stage2 batched H1 conversion 相对原始 fitting 的加速</span>
+            </div>
+            <div class="hero-stat">
+              <strong>2</strong>
+              <span>长文本运动生成 + H1 物理控制两个阶段</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="hero-media" aria-label="主展示视频">
+          <div class="hero-video-shell">
+            <video
+              src="assets/videos/stage1/val8_prompt_077.mp4"
+              controls
+              autoplay
+              muted
+              loop
+              playsinline
+              preload="metadata">
+            </video>
+            <div class="media-caption">
+              <div>
+                <div class="caption-title">Val8 prompt_077 baseline vs fine-tuned</div>
+                <div class="caption-sub">低姿态、起身和投掷动作组合，右侧为 Stage1 微调模型。</div>
+              </div>
+              <div class="compare-badge">Baseline / Fine-tuned</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="results" aria-labelledby="results-title">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="section-kicker">Project Result</p>
+          <h2 id="results-title">完整系统从长文本生成走到 H1 物理执行。</h2>
+          <p class="section-copy">
+            Stage1 在 Long100 上带来多项关键改善：R@2、matching score、平均长度、
+            early-stop rate 和 root path 均有提升。Stage2 进一步把生成动作接入 H1
+            retargeting 与 teacher-student physics tracking，展示从参考动作到可执行控制的完整链路。
+          </p>
+        </div>
+
+        <div class="result-grid">
+          <article class="result-card">
+            <div class="tag">Generalization</div>
+            <div>
+              <strong>0.110 -> 0.140</strong>
+              <span>Long100 approximate R@2 提升，使用 held-out test split 组合三段提示。</span>
+            </div>
+          </article>
+          <article class="result-card">
+            <div class="tag">Rollout</div>
+            <div>
+              <strong>44% -> 41%</strong>
+              <span>Long100 early-stop rate 下降，生成更倾向维持到目标长度。</span>
+            </div>
+          </article>
+          <article class="result-card">
+            <div class="tag">Motion Coverage</div>
+            <div>
+              <strong>3.37 -> 3.43</strong>
+              <span>Long100 平均 root path 增加，动作轨迹覆盖略强。</span>
+            </div>
+          </article>
+          <article class="result-card">
+            <div class="tag">Validation Showcase</div>
+            <div>
+              <strong>20.28 -> 14.99</strong>
+              <span>Val8 strict protocol approximate FID 明显改善，是最清晰的小样本正例。</span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt" id="videos" aria-labelledby="videos-title">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="section-kicker">Stage1 Visual Evidence</p>
+          <h2 id="videos-title">Stage1 baseline / fine-tuned 对比视频。</h2>
+          <p class="section-copy">
+            左侧是原始 MoConVQ text GPT baseline，右侧是 Stage1 微调模型。
+          </p>
+        </div>
+
+        <div class="video-layout">
+          <div class="video-list" id="videoList" role="tablist" aria-label="选择展示视频"></div>
+          <div class="player">
+            <video id="showcaseVideo" controls playsinline preload="metadata"></video>
+            <div class="player-info">
+              <h3 id="videoTitle"></h3>
+              <p class="prompt" id="videoPrompt"></p>
+              <div class="sample-metrics" aria-label="当前样例工程指标">
+                <div class="sample-metric">
+                  <span>Frames</span>
+                  <strong id="videoFrames"></strong>
+                </div>
+                <div class="sample-metric">
+                  <span>Root path</span>
+                  <strong id="videoRootPath"></strong>
+                </div>
+                <div class="sample-metric">
+                  <span>Early stop</span>
+                  <strong id="videoEarlyStop"></strong>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="metrics" aria-labelledby="metrics-title">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="section-kicker">Evaluation</p>
+          <h2 id="metrics-title">指标显示：小样本很强，大样本更克制。</h2>
+          <p class="section-copy">
+            指标来自 approximate T2M evaluator adapter。生成 BVH 会先转为 HumanML3D 22-joint / 263-d 表示，
+            evaluator 最多消费 196 帧，因此这些数字主要用于展示趋势和相对变化。
+          </p>
+        </div>
+
+        <div class="metrics-grid">
+          <div class="table-wrap" aria-label="指标对比表">
+            <table>
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th>Suite</th>
+                  <th>Baseline</th>
+                  <th>Fine-tuned</th>
+                  <th>Direction</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>FID, lower is better</td>
+                  <td>Long100</td>
+                  <td>7.0400</td>
+                  <td>7.2092</td>
+                  <td class="flat">close</td>
+                </tr>
+                <tr>
+                  <td>R@2, higher is better</td>
+                  <td>Long100</td>
+                  <td>0.110</td>
+                  <td>0.140</td>
+                  <td class="up">improved</td>
+                </tr>
+                <tr>
+                  <td>Matching score, lower is better</td>
+                  <td>Long100</td>
+                  <td>5.0077</td>
+                  <td>4.9591</td>
+                  <td class="up">improved</td>
+                </tr>
+                <tr>
+                  <td>Early-stop rate, lower is better</td>
+                  <td>Long100</td>
+                  <td>0.44</td>
+                  <td>0.41</td>
+                  <td class="up">improved</td>
+                </tr>
+                <tr>
+                  <td>FID, lower is better</td>
+                  <td>Val8</td>
+                  <td>20.2790</td>
+                  <td>14.9851</td>
+                  <td class="up">improved</td>
+                </tr>
+                <tr>
+                  <td>R@3, higher is better</td>
+                  <td>Val8</td>
+                  <td>0.625</td>
+                  <td>0.875</td>
+                  <td class="up">improved</td>
+                </tr>
+                <tr>
+                  <td>Matching score, lower is better</td>
+                  <td>Val18 epoch2</td>
+                  <td>4.8802</td>
+                  <td>4.7885</td>
+                  <td class="up">improved</td>
+                </tr>
+                <tr>
+                  <td>R@1 / R@3</td>
+                  <td>Long100</td>
+                  <td>0.050 / 0.160</td>
+                  <td>0.050 / 0.160</td>
+                  <td class="flat">tied</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <section class="section dark" id="stage1" aria-labelledby="method-title">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="section-kicker">Stage1 Method</p>
+          <h2 id="method-title">Stage1 负责从长文本生成长时序人体动作。</h2>
+          <p class="section-copy">
+            最终路线采用 HumanML3D -> BVH -> MoConVQ native character retarget。
+            这条 BVH-native 路线让 HumanML3D 长序列更自然地进入 MoConVQ simulator observation
+            和 RVQ token space，为 segment-aligned GPT fine-tuning 提供更稳健的数据基础。
+          </p>
+        </div>
+
+        <div class="method-layout">
+          <div class="image-card">
+            <img src="assets/images/pipeline.png" alt="Stage1 pipeline diagram">
+            <div class="image-copy">
+              <h3>HumanML3D 到 MoConVQ 的端到端路线</h3>
+              <p>
+                长动作文本合成、BVH 导出、原生角色重定向、RVQ token cache、segment-prefix 微调和显式分段推理保持一致。
+              </p>
+            </div>
+          </div>
+
+          <div class="pipeline" aria-label="方法流程">
+            <article class="step">
+              <div class="step-index">01</div>
+              <div>
+                <h3>构造长文本和长 motion</h3>
+                <p>从 HumanML3D clip captions 合成多段长序列，并保留原始片段边界。</p>
+              </div>
+            </article>
+            <article class="step">
+              <div class="step-index">02</div>
+              <div>
+                <h3>导出 BVH 并走原生 retarget</h3>
+                <p>使用 MoConVQ native MotionDataSet.add_bvh_with_character() 生成 simulator character observation。</p>
+              </div>
+            </article>
+            <article class="step">
+              <div class="step-index">03</div>
+              <div>
+                <h3>建立 segment-aligned GPT cache</h3>
+                <p>缓存 RVQ indices、latent_vq、T5 text feature 和 segment-prefix metadata。</p>
+              </div>
+            </article>
+            <article class="step">
+              <div class="step-index">04</div>
+              <div>
+                <h3>显式分段推理和评估</h3>
+                <p>推理传入 segments_json 与 segment_lengths，使训练时的 segment metadata 和推理协议保持一致。</p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="stage2" aria-labelledby="stage2-title">
+      <div class="wrap">
+        <div class="section-head">
+          <p class="section-kicker">Stage2 Humanoid Control</p>
+          <h2 id="stage2-title">Stage2 将生成动作变成 H1 humanoid 可执行的物理控制。</h2>
+          <p class="section-copy">
+            Stage1 输出的是 long kinematic references。Stage2 需要处理平衡、接触、关节限制和 torque-compatible
+            tracking：先把生成 BVH 转成 AMASS-like reference，再做 H1 retargeting，最后训练 teacher-student
+            tracking policy，实现从参考轨迹到物理控制策略的转换。
+          </p>
+        </div>
+
+        <div class="result-grid">
+          <article class="result-card">
+            <div class="tag">Retargeting</div>
+            <div>
+              <strong>BVH -> H1</strong>
+              <span>构建 BVH-to-AMASS-like bridge，接入 HOVER/H1 retarget optimizer。</span>
+            </div>
+          </article>
+          <article class="result-card">
+            <div class="tag">Conversion</div>
+            <div>
+              <strong>72h -> 3.2h</strong>
+              <span>通过 batched conversion 与 cache reuse，把 H1 转换流程加速约 22.5x。</span>
+            </div>
+          </article>
+          <article class="result-card">
+            <div class="tag">Control</div>
+            <div>
+              <strong>Teacher -> Student</strong>
+              <span>Teacher 使用 privileged reference state；Student 只保留可部署的 proprioception 和 masked commands。</span>
+            </div>
+          </article>
+          <article class="result-card">
+            <div class="tag">Stability</div>
+            <div>
+              <strong>Track</strong>
+              <span>Stage2 policy 展示了更稳定的 H1 跟踪执行，并补充 baseline 对比样例。</span>
+            </div>
+          </article>
+        </div>
+
+        <div class="stage2-video-grid" aria-label="Stage2 demo videos">
+          <article class="stage2-video-card">
+            <video src="assets/videos/stage2/baseline_comparison.mp4" controls autoplay muted loop playsinline preload="metadata"></video>
+            <div class="stage2-video-copy">
+              <div class="status-row">
+                <span class="status-chip">Baseline comparison</span>
+                <span class="status-chip">1280x720 / 2.0s</span>
+              </div>
+              <h3>Baseline comparison</h3>
+              <p>
+                该视频提供 Stage2 baseline 对比，用于展示从生成参考动作到物理控制的转换过程。
+                后续 controlled demos 展示 retargeting 与 policy learning 后的 H1 执行效果。
+              </p>
+            </div>
+          </article>
+
+          <article class="stage2-video-card">
+            <video src="assets/videos/stage2/h1_tracking_demo_a.mp4" controls autoplay muted loop playsinline preload="metadata"></video>
+            <div class="stage2-video-copy">
+              <div class="status-row">
+                <span class="status-chip">Stage2 controlled</span>
+                <span class="status-chip">1280x720 / 2.4s</span>
+              </div>
+              <h3>H1 tracking demo A</h3>
+              <p>
+                H1 retargeting 后的物理控制样例，展示 teacher-student tracking policy 对生成动作参考的稳定执行能力。
+              </p>
+            </div>
+          </article>
+
+          <article class="stage2-video-card">
+            <video src="assets/videos/stage2/h1_tracking_demo_b.mp4" controls autoplay muted loop playsinline preload="metadata"></video>
+            <div class="stage2-video-copy">
+              <div class="status-row">
+                <span class="status-chip">Stage2 controlled</span>
+                <span class="status-chip">1280x720 / 1.8s</span>
+              </div>
+              <h3>H1 tracking demo B</h3>
+              <p>
+                该样例强调 grounding normalization、joint-limit filtering 与 tracking reward 对短时稳定性的作用。
+              </p>
+            </div>
+          </article>
+
+          <article class="stage2-video-card">
+            <video src="assets/videos/stage2/h1_tracking_demo_c.mp4" controls autoplay muted loop playsinline preload="metadata"></video>
+            <div class="stage2-video-copy">
+              <div class="status-row">
+                <span class="status-chip">Stage2 controlled</span>
+                <span class="status-chip">1280x720 / 1.4s</span>
+              </div>
+              <h3>H1 tracking demo C</h3>
+              <p>
+                额外 H1 执行样例，用于补充展示 retargeting + policy learning 后的控制效果。
+              </p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <span>L-PHYM: Long-Horizon Language-Driven Physics-Based Motion Control</span>
+      <span>Stage1 generation -> Stage2 H1 retargeting and control</span>
+    </div>
+  </footer>
+
+  <script>
+    if ("scrollRestoration" in history) {
+      history.scrollRestoration = "manual";
+    }
+
+    const navigationEntry = performance.getEntriesByType("navigation")[0];
+    const isReload = navigationEntry && navigationEntry.type === "reload";
+
+    if (isReload && window.location.hash) {
+      history.replaceState(null, document.title, window.location.pathname + window.location.search);
+    }
+
+    window.addEventListener("pageshow", () => {
+      if (isReload) {
+        requestAnimationFrame(() => window.scrollTo(0, 0));
+        setTimeout(() => window.scrollTo(0, 0), 0);
+      }
+    });
+
+    const videos = [
+      {
+        id: "val8-057",
+        group: "Val8 epoch3",
+        title: "prompt_057 | pick, scrub, walk",
+        src: "assets/videos/stage1/val8_prompt_057.mp4",
+        prompt: "a person reaches their right hand down to pick something up like a bucket. they then scrub something in front of them at waist level with their left hand for a couple seconds then a person takes four steps forward, walking at a somewhat quick pace. then a person walks forward in a slight right to left and left to right sway.",
+        frames: "1344 -> 1536",
+        rootPath: "0.876 -> 2.192",
+        earlyStop: "False -> False"
+      },
+      {
+        id: "val8-018",
+        group: "Val8 epoch3",
+        title: "prompt_018 | gesture, walk, catch",
+        src: "assets/videos/stage1/val8_prompt_018.mp4",
+        prompt: "this person is gesturing with both hands as if he is teaching. then person is walking straight ahead then a person catches something with both hands.",
+        frames: "1392 -> 1656",
+        rootPath: "1.474 -> 2.938",
+        earlyStop: "False -> False"
+      },
+      {
+        id: "long100-089",
+        group: "Long100 epoch3",
+        title: "long100_089 | jumping jack, drums, curve walk",
+        src: "assets/videos/stage1/long100_089.mp4",
+        prompt: "standing forward, hands are at the side moving toward sides of the head and back down while the legs are slightly jumping outwards. creating a jumping jack. then the person is playing the drums with both hands. then the person is walking around the bend to the right.",
+        frames: "1152 -> 1536",
+        rootPath: "2.329 -> 5.116",
+        earlyStop: "True -> False"
+      },
+      {
+        id: "long100-096",
+        group: "Long100 epoch3",
+        title: "long100_096 | stumble, turn, exercise",
+        src: "assets/videos/stage1/long100_096.mp4",
+        prompt: "person walks forward, stumbles back, and continues forward then a person grab with right hand the stand, and doing the spesific motion with right leg, turning in different directions then person is doing an excercise with hands forward.",
+        frames: "1128 -> 1440",
+        rootPath: "2.778 -> 4.526",
+        earlyStop: "True -> False"
+      },
+      {
+        id: "long100-024",
+        group: "Long100 epoch3",
+        title: "long100_024 | salsa, curve walk, prone hand turn",
+        src: "assets/videos/stage1/long100_024.mp4",
+        prompt: "a person is doing a salsa dance moving their legs and arms. then a person walks in a curved movement to the left then a person is on their stomach turning their hand from right to left.",
+        frames: "888 -> 1248",
+        rootPath: "2.517 -> 3.363",
+        earlyStop: "True -> False"
+      },
+      {
+        id: "val18-099",
+        group: "Val18 epoch2",
+        title: "prompt_099 | stretch, bow, pour",
+        src: "assets/videos/stage1/val18_prompt_099.mp4",
+        prompt: "a person is stretching their right leg. then a person bows forward then returns to a prone position. then a person pours something with their right hand, puts it down to their side, then reaches for something to their left side with their left hand.",
+        frames: "1296 -> 1536",
+        rootPath: "7.471 -> 8.715",
+        earlyStop: "False -> False"
+      }
+    ];
+
+    const videoList = document.getElementById("videoList");
+    const player = document.getElementById("showcaseVideo");
+    const title = document.getElementById("videoTitle");
+    const prompt = document.getElementById("videoPrompt");
+    const frames = document.getElementById("videoFrames");
+    const rootPath = document.getElementById("videoRootPath");
+    const earlyStop = document.getElementById("videoEarlyStop");
+
+    function selectVideo(index) {
+      const item = videos[index];
+      player.src = item.src;
+      title.textContent = item.title;
+      prompt.textContent = item.prompt;
+      frames.textContent = item.frames;
+      rootPath.textContent = item.rootPath;
+      earlyStop.textContent = item.earlyStop;
+
+      [...videoList.querySelectorAll("button")].forEach((button, buttonIndex) => {
+        button.setAttribute("aria-selected", buttonIndex === index ? "true" : "false");
+      });
+    }
+
+    videos.forEach((item, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "video-tab";
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-selected", index === 0 ? "true" : "false");
+      button.innerHTML = `<small>${item.group}</small><span>${item.title}</span>`;
+      button.addEventListener("click", () => selectVideo(index));
+      videoList.appendChild(button);
+    });
+
+    selectVideo(0);
+  </script>
+</body>
+</html>
