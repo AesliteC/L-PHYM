@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>L-PHYM 结果展示 | 两阶段长时序语言驱动物理运动控制</title>
+  <title>L-PHYM Results Showcase | Two-Stage Long-Horizon Language-to-Physics Motion Control</title>
   <style>
     :root {
       color-scheme: light;
@@ -177,7 +177,7 @@
     .hero-title-block h1 {
       max-width: none;
       white-space: nowrap;
-      font-size: clamp(42px, 5.2vw, 72px);
+      font-size: clamp(34px, 4.1vw, 50px);
     }
 
     .lead {
@@ -386,6 +386,14 @@
       gap: 14px;
     }
 
+    #results .wrap {
+      width: min(1320px, calc(100% - 40px));
+    }
+
+    #stage2 .control-card {
+      grid-column: span 2;
+    }
+
     .result-card {
       min-height: 174px;
       padding: 22px;
@@ -394,14 +402,16 @@
       border: 1px solid var(--line);
       display: flex;
       flex-direction: column;
-      justify-content: space-between;
+      justify-content: flex-start;
+      gap: 18px;
     }
 
     .result-card strong {
       display: block;
-      font-size: clamp(27px, 3.4vw, 42px);
+      font-size: clamp(24px, 2.8vw, 38px);
       line-height: 1;
       letter-spacing: 0;
+      white-space: nowrap;
       color: var(--ink);
     }
 
@@ -415,13 +425,17 @@
 
     .result-card .tag {
       align-self: flex-start;
-      margin: 0 0 18px;
+      min-height: 26px;
+      margin: 0;
       padding: 5px 9px;
       border-radius: 999px;
       color: var(--green-dark);
       background: rgba(29, 118, 106, 0.1);
       font-size: 12px;
       font-weight: 760;
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
     }
 
     .video-layout {
@@ -906,6 +920,12 @@
       flex-wrap: wrap;
     }
 
+    @media (max-width: 1260px) {
+      #results .result-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
     @media (max-width: 980px) {
       .hero {
         min-height: auto;
@@ -978,22 +998,26 @@
         grid-template-columns: 1fr;
       }
 
+      #stage2 .control-card {
+        grid-column: auto;
+      }
+
     }
   </style>
 </head>
 <body>
   <header class="site-header">
-    <nav class="nav" aria-label="主导航">
-      <a class="brand" href="#top" aria-label="返回顶部">
+    <nav class="nav" aria-label="Main navigation">
+      <a class="brand" href="#top" aria-label="Back to top">
         <span class="brand-mark" aria-hidden="true"></span>
         <span>L-PHYM Project Showcase</span>
       </a>
       <div class="nav-links">
-        <a href="#results">结果</a>
+        <a href="#results">Results</a>
         <a href="#stage1">Stage1</a>
         <a href="#stage2">Stage2</a>
-        <a href="#videos">视频</a>
-        <a href="#metrics">指标</a>
+        <a href="#videos">Videos</a>
+        <a href="#metrics">Metrics</a>
       </div>
     </nav>
   </header>
@@ -1007,35 +1031,36 @@
             <span class="pill">Stage1 + Stage2</span>
             <span class="pill">Final Presentation</span>
           </p>
-          <h1 id="hero-title">长时序语言驱动物理运动控制</h1>
+          <h1 id="hero-title">Long-Horizon Language-to-Physics Motion Control</h1>
         </div>
 
         <div class="hero-copy">
           <p class="lead">
-            本展示页汇总完整两阶段系统：Stage1 将长文本提示生成可审阅的长时序人体动作，
-            Stage2 将这些 kinematic references 转换、重定向并训练 H1 humanoid 的物理跟踪控制。
+            This showcase summarizes the complete two-stage system: Stage1 turns long text prompts into
+            reviewable long-horizon human motion, and Stage2 converts and retargets those kinematic
+            references into physics-based H1 humanoid control.
           </p>
           <div class="hero-actions">
-            <a class="btn btn-primary" href="#stage1">查看 Stage1 结果</a>
-            <a class="btn btn-secondary" href="#stage2">查看 Stage2 视频</a>
+            <a class="btn btn-primary" href="#stage1">View Stage1 Results</a>
+            <a class="btn btn-secondary" href="#stage2">View Stage2 Videos</a>
           </div>
-          <div class="hero-stats" aria-label="项目关键数字">
+          <div class="hero-stats" aria-label="Key project numbers">
             <div class="hero-stat">
               <strong>100</strong>
-              <span>HumanML3D-test Long100 独立三段长文本提示</span>
+              <span>Independent three-segment long text prompts from HumanML3D-test Long100</span>
             </div>
             <div class="hero-stat">
               <strong>22.5x</strong>
-              <span>Stage2 batched H1 conversion 相对原始 fitting 的加速</span>
+              <span>Stage2 batched H1 conversion speedup over the original fitting pipeline</span>
             </div>
             <div class="hero-stat">
               <strong>2</strong>
-              <span>长文本运动生成 + H1 物理控制两个阶段</span>
+              <span>Two stages: long-text motion generation and H1 physical control</span>
             </div>
           </div>
         </div>
 
-        <div class="hero-media" aria-label="主展示视频">
+        <div class="hero-media" aria-label="Main showcase video">
           <div class="hero-video-shell">
             <video
               src="assets/videos/stage1/val8_prompt_077.mp4"
@@ -1049,7 +1074,7 @@
             <div class="media-caption">
               <div>
                 <div class="caption-title">Val8 prompt_077 baseline vs fine-tuned</div>
-                <div class="caption-sub">低姿态、起身和投掷动作组合，右侧为 Stage1 微调模型。</div>
+                <div class="caption-sub">A low-pose, stand-up, and throwing sequence; the Stage1 fine-tuned model is shown on the right.</div>
               </div>
               <div class="compare-badge">Baseline / Fine-tuned</div>
             </div>
@@ -1062,11 +1087,12 @@
       <div class="wrap">
         <div class="section-head">
           <p class="section-kicker">Project Result</p>
-          <h2 id="results-title">完整系统从长文本生成走到 H1 物理执行。</h2>
+          <h2 id="results-title">The complete system connects long-text generation to H1 physical execution.</h2>
           <p class="section-copy">
-            Stage1 在 Long100 上带来多项关键改善：R@2、matching score、平均长度、
-            early-stop rate 和 root path 均有提升。Stage2 进一步把生成动作接入 H1
-            retargeting 与 teacher-student physics tracking，展示从参考动作到可执行控制的完整链路。
+            On Long100, Stage1 improves key trends across R@2, matching score, average length,
+            early-stop rate, and root path. Stage2 further connects generated motions to H1
+            retargeting and teacher-student physics tracking, completing the path from reference
+            motion to executable control.
           </p>
         </div>
 
@@ -1074,29 +1100,29 @@
           <article class="result-card">
             <div class="tag">Generalization</div>
             <div>
-              <strong>0.110 -> 0.140</strong>
-              <span>Long100 approximate R@2 提升，使用 held-out test split 组合三段提示。</span>
+              <strong>0.11 -> 0.14</strong>
+              <span>Long100 approximate R@2 improves on held-out test split prompts composed from three segments.</span>
             </div>
           </article>
           <article class="result-card">
             <div class="tag">Rollout</div>
             <div>
               <strong>44% -> 41%</strong>
-              <span>Long100 early-stop rate 下降，生成更倾向维持到目标长度。</span>
+              <span>Long100 early-stop rate decreases, with rollouts more likely to reach the target length.</span>
             </div>
           </article>
           <article class="result-card">
             <div class="tag">Motion Coverage</div>
             <div>
               <strong>3.37 -> 3.43</strong>
-              <span>Long100 平均 root path 增加，动作轨迹覆盖略强。</span>
+              <span>Long100 average root path increases, indicating broader trajectory coverage.</span>
             </div>
           </article>
           <article class="result-card">
             <div class="tag">Validation Showcase</div>
             <div>
               <strong>20.28 -> 14.99</strong>
-              <span>Val8 strict protocol approximate FID 明显改善，是最清晰的小样本正例。</span>
+              <span>Val8 strict protocol approximate FID improves clearly, providing a strong small-suite validation example.</span>
             </div>
           </article>
         </div>
@@ -1107,20 +1133,20 @@
       <div class="wrap">
         <div class="section-head">
           <p class="section-kicker">Stage1 Visual Evidence</p>
-          <h2 id="videos-title">Stage1 baseline / fine-tuned 对比视频。</h2>
+          <h2 id="videos-title">Stage1 baseline / fine-tuned comparison videos.</h2>
           <p class="section-copy">
-            左侧是原始 MoConVQ text GPT baseline，右侧是 Stage1 微调模型。
+            The original MoConVQ text GPT baseline is shown on the left; the Stage1 fine-tuned model is shown on the right.
           </p>
         </div>
 
         <div class="video-layout">
-          <div class="video-list" id="videoList" role="tablist" aria-label="选择展示视频"></div>
+          <div class="video-list" id="videoList" role="tablist" aria-label="Select showcase video"></div>
           <div class="player">
             <video id="showcaseVideo" controls playsinline preload="metadata"></video>
             <div class="player-info">
               <h3 id="videoTitle"></h3>
               <p class="prompt" id="videoPrompt"></p>
-              <div class="sample-metrics" aria-label="当前样例工程指标">
+              <div class="sample-metrics" aria-label="Current sample engineering metrics">
                 <div class="sample-metric">
                   <span>Frames</span>
                   <strong id="videoFrames"></strong>
@@ -1144,15 +1170,16 @@
       <div class="wrap">
         <div class="section-head">
           <p class="section-kicker">Evaluation</p>
-          <h2 id="metrics-title">指标显示：小样本很强，大样本更克制。</h2>
+          <h2 id="metrics-title">Metrics highlight strong small-suite gains and measured large-suite trends.</h2>
           <p class="section-copy">
-            指标来自 approximate T2M evaluator adapter。生成 BVH 会先转为 HumanML3D 22-joint / 263-d 表示，
-            evaluator 最多消费 196 帧，因此这些数字主要用于展示趋势和相对变化。
+            Metrics use an approximate T2M evaluator adapter. Generated BVH is first converted to the
+            HumanML3D 22-joint / 263-d representation, and the evaluator consumes up to 196 frames,
+            so these numbers are best used for trend and relative-change analysis.
           </p>
         </div>
 
         <div class="metrics-grid">
-          <div class="table-wrap" aria-label="指标对比表">
+          <div class="table-wrap" aria-label="Metric comparison table">
             <table>
               <thead>
                 <tr>
@@ -1174,8 +1201,8 @@
                 <tr>
                   <td>R@2, higher is better</td>
                   <td>Long100</td>
-                  <td>0.110</td>
-                  <td>0.140</td>
+                  <td>0.11</td>
+                  <td>0.14</td>
                   <td class="up">improved</td>
                 </tr>
                 <tr>
@@ -1232,11 +1259,12 @@
       <div class="wrap">
         <div class="section-head">
           <p class="section-kicker">Stage1 Method</p>
-          <h2 id="method-title">Stage1 负责从长文本生成长时序人体动作。</h2>
+          <h2 id="method-title">Stage1 generates long-horizon human motion from long text prompts.</h2>
           <p class="section-copy">
-            最终路线采用 HumanML3D -> BVH -> MoConVQ native character retarget。
-            这条 BVH-native 路线让 HumanML3D 长序列更自然地进入 MoConVQ simulator observation
-            和 RVQ token space，为 segment-aligned GPT fine-tuning 提供更稳健的数据基础。
+            The final route uses HumanML3D -> BVH -> MoConVQ native character retargeting.
+            This BVH-native route lets HumanML3D long sequences enter the MoConVQ simulator
+            observation and RVQ token space more naturally, providing a stronger data basis for
+            segment-aligned GPT fine-tuning.
           </p>
         </div>
 
@@ -1244,40 +1272,42 @@
           <div class="image-card">
             <img src="assets/images/pipeline.png" alt="Stage1 pipeline diagram">
             <div class="image-copy">
-              <h3>HumanML3D 到 MoConVQ 的端到端路线</h3>
+              <h3>End-to-end route from HumanML3D to MoConVQ</h3>
               <p>
-                长动作文本合成、BVH 导出、原生角色重定向、RVQ token cache、segment-prefix 微调和显式分段推理保持一致。
+                Long-motion text composition, BVH export, native character retargeting, RVQ token
+                cache construction, segment-prefix fine-tuning, and explicit segmented inference
+                stay aligned.
               </p>
             </div>
           </div>
 
-          <div class="pipeline" aria-label="方法流程">
+          <div class="pipeline" aria-label="Method pipeline">
             <article class="step">
               <div class="step-index">01</div>
               <div>
-                <h3>构造长文本和长 motion</h3>
-                <p>从 HumanML3D clip captions 合成多段长序列，并保留原始片段边界。</p>
+                <h3>Construct long text and long motion</h3>
+                <p>Compose multi-segment long sequences from HumanML3D clip captions while preserving original clip boundaries.</p>
               </div>
             </article>
             <article class="step">
               <div class="step-index">02</div>
               <div>
-                <h3>导出 BVH 并走原生 retarget</h3>
-                <p>使用 MoConVQ native MotionDataSet.add_bvh_with_character() 生成 simulator character observation。</p>
+                <h3>Export BVH and use native retargeting</h3>
+                <p>Use MoConVQ native MotionDataSet.add_bvh_with_character() to generate simulator character observations.</p>
               </div>
             </article>
             <article class="step">
               <div class="step-index">03</div>
               <div>
-                <h3>建立 segment-aligned GPT cache</h3>
-                <p>缓存 RVQ indices、latent_vq、T5 text feature 和 segment-prefix metadata。</p>
+                <h3>Build a segment-aligned GPT cache</h3>
+                <p>Cache RVQ indices, latent_vq, T5 text features, and segment-prefix metadata.</p>
               </div>
             </article>
             <article class="step">
               <div class="step-index">04</div>
               <div>
-                <h3>显式分段推理和评估</h3>
-                <p>推理传入 segments_json 与 segment_lengths，使训练时的 segment metadata 和推理协议保持一致。</p>
+                <h3>Run explicit segmented inference and evaluation</h3>
+                <p>Pass segments_json and segment_lengths at inference time so training segment metadata and the inference protocol stay aligned.</p>
               </div>
             </article>
           </div>
@@ -1289,11 +1319,12 @@
       <div class="wrap">
         <div class="section-head">
           <p class="section-kicker">Stage2 Humanoid Control</p>
-          <h2 id="stage2-title">Stage2 将生成动作变成 H1 humanoid 可执行的物理控制。</h2>
+          <h2 id="stage2-title">Stage2 turns generated motion into executable physical control for the H1 humanoid.</h2>
           <p class="section-copy">
-            Stage1 输出的是 long kinematic references。Stage2 需要处理平衡、接触、关节限制和 torque-compatible
-            tracking：先把生成 BVH 转成 AMASS-like reference，再做 H1 retargeting，最后训练 teacher-student
-            tracking policy，实现从参考轨迹到物理控制策略的转换。
+            Stage1 outputs long kinematic references. Stage2 handles balance, contact, joint limits,
+            and torque-compatible tracking: it converts generated BVH to AMASS-like references,
+            retargets them to H1, and trains a teacher-student tracking policy to move from
+            reference trajectories to physical control.
           </p>
         </div>
 
@@ -1302,28 +1333,21 @@
             <div class="tag">Retargeting</div>
             <div>
               <strong>BVH -> H1</strong>
-              <span>构建 BVH-to-AMASS-like bridge，接入 HOVER/H1 retarget optimizer。</span>
+              <span>Builds a BVH-to-AMASS-like bridge and connects it to the HOVER/H1 retarget optimizer.</span>
             </div>
           </article>
           <article class="result-card">
             <div class="tag">Conversion</div>
             <div>
               <strong>72h -> 3.2h</strong>
-              <span>通过 batched conversion 与 cache reuse，把 H1 转换流程加速约 22.5x。</span>
+              <span>Uses batched conversion and cache reuse to accelerate H1 conversion by about 22.5x.</span>
             </div>
           </article>
-          <article class="result-card">
+          <article class="result-card control-card">
             <div class="tag">Control</div>
             <div>
               <strong>Teacher -> Student</strong>
-              <span>Teacher 使用 privileged reference state；Student 只保留可部署的 proprioception 和 masked commands。</span>
-            </div>
-          </article>
-          <article class="result-card">
-            <div class="tag">Stability</div>
-            <div>
-              <strong>Track</strong>
-              <span>Stage2 policy 展示了更稳定的 H1 跟踪执行，并补充 baseline 对比样例。</span>
+              <span>The teacher uses privileged reference state; the student keeps deployable proprioception and masked commands.</span>
             </div>
           </article>
         </div>
@@ -1338,8 +1362,9 @@
               </div>
               <h3>Baseline comparison</h3>
               <p>
-                该视频提供 Stage2 baseline 对比，用于展示从生成参考动作到物理控制的转换过程。
-                后续 controlled demos 展示 retargeting 与 policy learning 后的 H1 执行效果。
+                This video provides the Stage2 baseline comparison and shows the conversion path from
+                generated reference motion to physical control. The controlled demos below show H1
+                execution after retargeting and policy learning.
               </p>
             </div>
           </article>
@@ -1353,7 +1378,8 @@
               </div>
               <h3>H1 tracking demo A</h3>
               <p>
-                H1 retargeting 后的物理控制样例，展示 teacher-student tracking policy 对生成动作参考的稳定执行能力。
+                A physical-control sample after H1 retargeting, showing how the teacher-student
+                tracking policy executes generated motion references.
               </p>
             </div>
           </article>
@@ -1367,7 +1393,8 @@
               </div>
               <h3>H1 tracking demo B</h3>
               <p>
-                该样例强调 grounding normalization、joint-limit filtering 与 tracking reward 对短时稳定性的作用。
+                This sample highlights grounding normalization, joint-limit filtering, and tracking
+                rewards for short-horizon stability.
               </p>
             </div>
           </article>
@@ -1381,7 +1408,8 @@
               </div>
               <h3>H1 tracking demo C</h3>
               <p>
-                额外 H1 执行样例，用于补充展示 retargeting + policy learning 后的控制效果。
+                An additional H1 execution sample that supplements the retargeting + policy learning
+                control results.
               </p>
             </div>
           </article>
