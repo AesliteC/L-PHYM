@@ -1063,7 +1063,7 @@
         <div class="hero-media" aria-label="Main showcase video">
           <div class="hero-video-shell">
             <video
-              src="assets/videos/stage1/val8_prompt_077.mp4"
+              src="assets/videos/stage1/val8_prompt_057.mp4"
               controls
               autoplay
               muted
@@ -1073,8 +1073,8 @@
             </video>
             <div class="media-caption">
               <div>
-                <div class="caption-title">Val8 prompt_077 baseline vs fine-tuned</div>
-                <div class="caption-sub">A low-pose, stand-up, and throwing sequence; the Stage1 fine-tuned model is shown on the right.</div>
+                <div class="caption-title">Val8 prompt_057 baseline vs fine-tuned</div>
+                <div class="caption-sub">A pick-up, scrubbing, and forward-walking sequence; the Stage1 fine-tuned model is shown on the right.</div>
               </div>
               <div class="compare-badge">Baseline / Fine-tuned</div>
             </div>
@@ -1447,14 +1447,14 @@
 
     const videos = [
       {
-        id: "val8-057",
+        id: "val8-077",
         group: "Val8 epoch3",
-        title: "prompt_057 | pick, scrub, walk",
-        src: "assets/videos/stage1/val8_prompt_057.mp4",
-        prompt: "a person reaches their right hand down to pick something up like a bucket. they then scrub something in front of them at waist level with their left hand for a couple seconds then a person takes four steps forward, walking at a somewhat quick pace. then a person walks forward in a slight right to left and left to right sway.",
-        frames: "1344 -> 1536",
-        rootPath: "0.876 -> 2.192",
-        earlyStop: "False -> False"
+        title: "prompt_077 | kneel, stand up, throw",
+        src: "assets/videos/stage1/val8_prompt_077.mp4",
+        prompt: "the man is kneeling down then a person on the ground stands up. then a person does throwing motion with left arm and then brings both hands over left shoulder with both elbows pointed outwards.",
+        frames: "888 -> 888",
+        rootPath: "1.452 -> 1.833",
+        earlyStop: "True -> True"
       },
       {
         id: "val8-018",
@@ -1495,16 +1495,6 @@
         frames: "888 -> 1248",
         rootPath: "2.517 -> 3.363",
         earlyStop: "True -> False"
-      },
-      {
-        id: "val18-099",
-        group: "Val18 epoch2",
-        title: "prompt_099 | stretch, bow, pour",
-        src: "assets/videos/stage1/val18_prompt_099.mp4",
-        prompt: "a person is stretching their right leg. then a person bows forward then returns to a prone position. then a person pours something with their right hand, puts it down to their side, then reaches for something to their left side with their left hand.",
-        frames: "1296 -> 1536",
-        rootPath: "7.471 -> 8.715",
-        earlyStop: "False -> False"
       }
     ];
 
