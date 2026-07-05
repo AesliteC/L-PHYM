@@ -118,6 +118,56 @@
       color: var(--green-dark);
     }
 
+    .nav-menu {
+      position: relative;
+    }
+
+    .nav-menu-trigger {
+      padding: 10px 12px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: #3d443e;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .nav-menu-trigger:hover,
+    .nav-menu:focus-within .nav-menu-trigger {
+      background: rgba(29, 118, 106, 0.1);
+      color: var(--green-dark);
+    }
+
+    .nav-menu-panel {
+      position: absolute;
+      top: calc(100% + 10px);
+      right: 0;
+      z-index: 50;
+      min-width: 170px;
+      padding: 8px;
+      display: none;
+      gap: 2px;
+      border: 1px solid rgba(17, 18, 15, 0.12);
+      border-radius: 8px;
+      background: #ffffff;
+      box-shadow: 0 18px 40px rgba(17, 18, 15, 0.16);
+    }
+
+    .nav-menu:hover .nav-menu-panel,
+    .nav-menu:focus-within .nav-menu-panel {
+      display: grid;
+    }
+
+    .nav-menu-panel a {
+      padding: 9px 10px;
+      color: var(--ink-2);
+      white-space: nowrap;
+    }
+
+    .nav-menu-panel a:hover {
+      color: var(--green-dark);
+    }
+
     .hero {
       background: #11120f;
       color: #f8f7ef;
@@ -223,36 +273,6 @@
       color: #f8f7ef;
       border-color: rgba(255, 255, 255, 0.24);
       background: rgba(255, 255, 255, 0.06);
-    }
-
-    .hero-stats {
-      margin-top: 36px;
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
-      max-width: 620px;
-    }
-
-    .hero-stat {
-      padding: 16px 14px;
-      border: 1px solid rgba(255, 255, 255, 0.13);
-      border-radius: 8px;
-      background: rgba(255, 255, 255, 0.06);
-    }
-
-    .hero-stat strong {
-      display: block;
-      font-size: clamp(22px, 3vw, 31px);
-      line-height: 1;
-      color: #ffffff;
-    }
-
-    .hero-stat span {
-      display: block;
-      margin-top: 8px;
-      color: #c7ccbf;
-      font-size: 13px;
-      line-height: 1.35;
     }
 
     .hero-media {
@@ -386,8 +406,30 @@
       gap: 14px;
     }
 
+    #results .result-grid {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+
+    .framework-card {
+      margin: 26px 0 20px;
+    }
+
     #results .wrap {
       width: min(1320px, calc(100% - 40px));
+    }
+
+    #results .result-card {
+      min-height: 190px;
+      padding: 20px 18px;
+    }
+
+    #results .result-card strong {
+      font-size: clamp(24px, 1.9vw, 32px);
+    }
+
+    #results .result-card span {
+      font-size: 13.5px;
+      line-height: 1.48;
     }
 
     #stage2 .control-card {
@@ -709,13 +751,6 @@
       background: var(--blue);
     }
 
-    .method-layout {
-      display: grid;
-      grid-template-columns: minmax(0, 1.05fr) minmax(330px, 0.95fr);
-      gap: 24px;
-      align-items: start;
-    }
-
     .image-card {
       background: #ffffff;
       border: 1px solid var(--line);
@@ -742,6 +777,10 @@
     .pipeline {
       display: grid;
       gap: 10px;
+    }
+
+    #stage1 .pipeline {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .step {
@@ -922,7 +961,7 @@
 
     @media (max-width: 1260px) {
       #results .result-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
       }
     }
 
@@ -933,8 +972,7 @@
 
       .hero-inner,
       .video-layout,
-      .metrics-grid,
-      .method-layout {
+      .metrics-grid {
         grid-template-columns: 1fr;
       }
 
@@ -943,6 +981,10 @@
       }
 
       .result-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      #results .result-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
@@ -969,13 +1011,13 @@
         width: min(100% - 28px, var(--max));
       }
 
-      .hero-stats,
       .result-grid,
       .sample-metrics,
       .gallery,
       .stage2-video-grid,
       .stage-bridge,
       .paths,
+      #stage1 .pipeline,
       .video-list {
         grid-template-columns: 1fr;
       }
@@ -1002,6 +1044,10 @@
         grid-column: auto;
       }
 
+      #results .result-grid {
+        grid-template-columns: 1fr;
+      }
+
     }
   </style>
 </head>
@@ -1016,8 +1062,14 @@
         <a href="#results">Results</a>
         <a href="#stage1">Stage1</a>
         <a href="#stage2">Stage2</a>
-        <a href="#videos">Videos</a>
-        <a href="#metrics">Metrics</a>
+        <div class="nav-menu">
+          <button class="nav-menu-trigger" type="button" aria-haspopup="true">Videos</button>
+          <div class="nav-menu-panel">
+            <a href="#videos">Stage1 videos</a>
+            <a href="#stage2-videos">Stage2 videos</a>
+          </div>
+        </div>
+        <a href="#metrics">Stage1 Evaluation</a>
       </div>
     </nav>
   </header>
@@ -1028,8 +1080,8 @@
         <div class="hero-title-block">
           <p class="eyebrow">
             <span class="pill">L-PHYM</span>
-            <span class="pill">Stage1 + Stage2</span>
-            <span class="pill">Final Presentation</span>
+            <span class="pill">Motion Generation</span>
+            <span class="pill">H1 Humanoid Control</span>
           </p>
           <h1 id="hero-title">Long-Horizon Language-to-Physics Motion Control</h1>
         </div>
@@ -1041,26 +1093,12 @@
             references into physics-based H1 humanoid control.
           </p>
           <div class="hero-actions">
-            <a class="btn btn-primary" href="#stage1">View Stage1 Results</a>
-            <a class="btn btn-secondary" href="#stage2">View Stage2 Videos</a>
-          </div>
-          <div class="hero-stats" aria-label="Key project numbers">
-            <div class="hero-stat">
-              <strong>100</strong>
-              <span>Independent three-segment long text prompts from HumanML3D-test Long100</span>
-            </div>
-            <div class="hero-stat">
-              <strong>22.5x</strong>
-              <span>Stage2 batched H1 conversion speedup over the original fitting pipeline</span>
-            </div>
-            <div class="hero-stat">
-              <strong>2</strong>
-              <span>Two stages: long-text motion generation and H1 physical control</span>
-            </div>
+            <a class="btn btn-primary" href="#metrics">View Stage1 Evaluation</a>
+            <a class="btn btn-secondary" href="#stage2-videos">View Stage2 Videos</a>
           </div>
         </div>
 
-        <div class="hero-media" aria-label="Main showcase video">
+        <div class="hero-media" aria-label="Stage1 showcase video">
           <div class="hero-video-shell">
             <video
               src="assets/videos/stage1/val8_prompt_057.mp4"
@@ -1073,10 +1111,10 @@
             </video>
             <div class="media-caption">
               <div>
-                <div class="caption-title">Val8 prompt_057 baseline vs fine-tuned</div>
+                <div class="caption-title">Stage1 demo: Val8 prompt_057 baseline vs fine-tuned</div>
                 <div class="caption-sub">A pick-up, scrubbing, and forward-walking sequence; the Stage1 fine-tuned model is shown on the right.</div>
               </div>
-              <div class="compare-badge">Baseline / Fine-tuned</div>
+              <div class="compare-badge">Stage1 comparison</div>
             </div>
           </div>
         </div>
@@ -1094,6 +1132,17 @@
             retargeting and teacher-student physics tracking, completing the path from reference
             motion to executable control.
           </p>
+        </div>
+
+        <div class="image-card framework-card">
+          <img src="assets/images/pipeline.png" alt="Overall L-PHYM system framework diagram">
+          <div class="image-copy">
+            <h3>Overall L-PHYM framework</h3>
+            <p>
+              The system-level workflow connects long-text motion construction, BVH-native processing,
+              MoConVQ fine-tuning and inference, and the downstream path toward H1 physical execution.
+            </p>
+          </div>
         </div>
 
         <div class="result-grid">
@@ -1125,6 +1174,13 @@
               <span>Val8 strict protocol approximate FID improves clearly, providing a strong small-suite validation example.</span>
             </div>
           </article>
+          <article class="result-card conversion-result">
+            <div class="tag">Stage2 Conversion</div>
+            <div>
+              <strong>22.5x</strong>
+              <span>Stage2 batched H1 conversion speedup over the original fitting pipeline.</span>
+            </div>
+          </article>
         </div>
       </div>
     </section>
@@ -1132,7 +1188,7 @@
     <section class="section alt" id="videos" aria-labelledby="videos-title">
       <div class="wrap">
         <div class="section-head">
-          <p class="section-kicker">Stage1 Visual Evidence</p>
+          <p class="section-kicker">Stage1 Visual Results</p>
           <h2 id="videos-title">Stage1 baseline / fine-tuned comparison videos.</h2>
           <p class="section-copy">
             The original MoConVQ text GPT baseline is shown on the left; the Stage1 fine-tuned model is shown on the right.
@@ -1169,8 +1225,8 @@
     <section class="section" id="metrics" aria-labelledby="metrics-title">
       <div class="wrap">
         <div class="section-head">
-          <p class="section-kicker">Evaluation</p>
-          <h2 id="metrics-title">Metrics highlight strong small-suite gains and measured large-suite trends.</h2>
+          <p class="section-kicker">Stage1 Evaluation</p>
+          <h2 id="metrics-title">Stage1 metrics highlight strong small-suite gains and measured large-suite trends.</h2>
           <p class="section-copy">
             Metrics use an approximate T2M evaluator adapter. Generated BVH is first converted to the
             HumanML3D 22-joint / 263-d representation, and the evaluator consumes up to 196 frames,
@@ -1268,49 +1324,35 @@
           </p>
         </div>
 
-        <div class="method-layout">
-          <div class="image-card">
-            <img src="assets/images/pipeline.png" alt="Stage1 pipeline diagram">
-            <div class="image-copy">
-              <h3>End-to-end route from HumanML3D to MoConVQ</h3>
-              <p>
-                Long-motion text composition, BVH export, native character retargeting, RVQ token
-                cache construction, segment-prefix fine-tuning, and explicit segmented inference
-                stay aligned.
-              </p>
+        <div class="pipeline" aria-label="Stage1 method steps">
+          <article class="step">
+            <div class="step-index">01</div>
+            <div>
+              <h3>Construct long text and long motion</h3>
+              <p>Compose multi-segment long sequences from HumanML3D clip captions while preserving original clip boundaries.</p>
             </div>
-          </div>
-
-          <div class="pipeline" aria-label="Method pipeline">
-            <article class="step">
-              <div class="step-index">01</div>
-              <div>
-                <h3>Construct long text and long motion</h3>
-                <p>Compose multi-segment long sequences from HumanML3D clip captions while preserving original clip boundaries.</p>
-              </div>
-            </article>
-            <article class="step">
-              <div class="step-index">02</div>
-              <div>
-                <h3>Export BVH and use native retargeting</h3>
-                <p>Use MoConVQ native MotionDataSet.add_bvh_with_character() to generate simulator character observations.</p>
-              </div>
-            </article>
-            <article class="step">
-              <div class="step-index">03</div>
-              <div>
-                <h3>Build a segment-aligned GPT cache</h3>
-                <p>Cache RVQ indices, latent_vq, T5 text features, and segment-prefix metadata.</p>
-              </div>
-            </article>
-            <article class="step">
-              <div class="step-index">04</div>
-              <div>
-                <h3>Run explicit segmented inference and evaluation</h3>
-                <p>Pass segments_json and segment_lengths at inference time so training segment metadata and the inference protocol stay aligned.</p>
-              </div>
-            </article>
-          </div>
+          </article>
+          <article class="step">
+            <div class="step-index">02</div>
+            <div>
+              <h3>Export BVH and use native retargeting</h3>
+              <p>Use MoConVQ native MotionDataSet.add_bvh_with_character() to generate simulator character observations.</p>
+            </div>
+          </article>
+          <article class="step">
+            <div class="step-index">03</div>
+            <div>
+              <h3>Build a segment-aligned GPT cache</h3>
+              <p>Cache RVQ indices, latent_vq, T5 text features, and segment-prefix metadata.</p>
+            </div>
+          </article>
+          <article class="step">
+            <div class="step-index">04</div>
+            <div>
+              <h3>Fine-tune, infer, and evaluate</h3>
+              <p>Fine-tune the text GPT with segment-prefix metadata, then run explicit segmented inference and evaluate generated BVH against the baseline.</p>
+            </div>
+          </article>
         </div>
       </div>
     </section>
@@ -1352,7 +1394,7 @@
           </article>
         </div>
 
-        <div class="stage2-video-grid" aria-label="Stage2 demo videos">
+        <div class="stage2-video-grid" id="stage2-videos" aria-label="Stage2 demo videos">
           <article class="stage2-video-card">
             <video src="assets/videos/stage2/baseline_comparison.mp4" controls autoplay muted loop playsinline preload="metadata"></video>
             <div class="stage2-video-copy">
