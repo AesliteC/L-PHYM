@@ -133,33 +133,6 @@ include tracking success rate, global/local/procrustes-aligned MPJPE, velocity
 and acceleration errors, root-orientation errors, root-velocity error, and
 root-height error.
 
-## Development Branches
-
-The active branches relevant to this repository are:
-
-```text
-main                    Integration branch and project-level documentation.
-stage1                  Stage 1 development history and experiments.
-origin/stage_2_xiyuan_dev  Stage 2 development branch to be merged into main.
-```
-
-When the Stage 2 branch is synchronized into `main`, the root README should
-continue to describe both `stage1/` and `stage2/`, while detailed installation
-and running instructions should remain in each stage's own README files.
-
-## Current Status
-
-Stage 1 has an end-to-end experimental pipeline for long-horizon text-to-motion:
-HumanML3D sequence construction, MoConVQ-native retargeting, RVQ cache
-construction, GPT fine-tuning, BVH generation, rendering, and approximate
-evaluation.  The result is a working pipeline with partial improvement on long
-multi-stage prompts, but not a solved text-to-motion system.
-
-Stage 2 has a neural WBC codebase on `origin/stage_2_xiyuan_dev` for reference
-motion tracking, teacher/student policy workflows, MuJoCo validation, and H1
-deployment interfaces.  It will become the physics-consistent execution layer
-for motions produced or selected by Stage 1 once synchronized into `main`.
-
 ## References
 
 This project builds on:
