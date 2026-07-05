@@ -1,5 +1,9 @@
 # L-PHYM
 
+Project page: https://aeslitec.github.io/L-PHYM/
+
+Report: [Report.pdf](Report.pdf)
+
 L-PHYM is a two-stage course project for long-horizon language-driven humanoid
 motion generation and physics-based motion tracking.
 
