@@ -1,90 +1,171 @@
 # L-PHYM: Long-Horizon Language-Driven Physics-Based Motion Control
 
-L-PHYM is a course project for long-horizon, language-driven humanoid motion generation and physics-based deployment. The project builds on MoConVQ and extends it toward multi-step natural-language instructions, longer motion sequences, and physically plausible execution in simulation.
+L-PHYM is a course project for long-horizon, language-driven humanoid motion
+generation and physics-based deployment.  The project connects a language-to-
+motion generation stage with a neural whole-body-control stage so that compound
+natural-language instructions can first be converted into reference motions and
+then tracked by a physically simulated humanoid.
 
-The central problem is that current text-to-motion systems usually perform best on short, single-skill clips. When given compound instructions such as walking, turning, crouching, and continuing with another action, they often lose action order, repeat motions, or stop early. In addition, kinematic motion outputs such as BVH files are not automatically executable by a physically simulated humanoid, because they may violate balance, contact, or torque constraints.
+The central challenge is that text-to-motion models usually work best on short,
+single-skill clips.  With compound prompts such as walking, turning, crouching,
+and continuing into another action, they may lose action order, repeat motions,
+or stop early.  Kinematic outputs such as BVH files also are not automatically
+executable by a simulated humanoid because they may violate balance, contact, or
+torque constraints.
 
-L-PHYM addresses these issues with a two-stage framework:
+L-PHYM is organized as a two-stage system:
 
 ```text
 Natural language instruction
-  -> long-horizon motion generation
-  -> BVH motion output
-  -> physics-consistent humanoid deployment
+  -> Stage 1: long-horizon text-to-motion generation
+  -> BVH / reference motion output
+  -> Stage 2: physics-consistent whole-body tracking and deployment
 ```
 
-## Project Goals
+## Repository Layout
 
-The project aims to deliver:
+The `main` branch is the integration branch for the project.  It currently
+contains the Stage 1 implementation and is expected to receive the Stage 2 code
+from `origin/stage_2_xiyuan_dev` under `stage2/`.
 
-- a long-horizon text-to-motion generation pipeline based on MoConVQ;
-- synthesized multi-step text-motion training data from HumanML3D;
-- a fine-tuned MoConVQ text-conditioned GPT model for longer motion generation;
-- BVH generation and visual evaluation for compound prompts;
-- a planned physics-based deployment stage using reinforcement learning in simulation.
+```text
+stage1/   Long-horizon motion generation with MoConVQ and HumanML3D.
+stage2/   Neural WBC tracking, simulation, evaluation, and deployment code.
+```
+
+Stage-specific README files and experiment notes live inside each stage
+directory.  The root README is only the project-level map.
 
 ## Stage 1: Long-Horizon Motion Generation
 
-Stage 1 focuses on improving the text-to-motion generation side. It constructs longer paired motion-language samples from HumanML3D short clips, converts them into MoConVQ-compatible observations and RVQ motion tokens, and fine-tunes MoConVQ's `Text2Motion_Transformer`.
+Stage 1 focuses on generating longer motion sequences from multi-step language
+prompts.  It builds on MoConVQ's text-conditioned motion-token GPT and uses
+HumanML3D as the language-motion data source.
 
-The Stage 1 pipeline is:
+The current Stage 1 route is:
 
 ```text
 HumanML3D short motion clips
   -> synthesized long motion-language sequences
-  -> MoConVQ-compatible motion observations
-  -> RVQ motion-token training cache
+  -> BVH export
+  -> MoConVQ native character retargeting
+  -> simulator observations
+  -> RVQ motion-token cache with segment metadata
   -> fine-tuned MoConVQ Text2Motion Transformer
-  -> BVH generation and rendering
+  -> explicit-segment long-text inference
+  -> BVH generation, rendering, and evaluation
 ```
 
-The current Stage 1 implementation includes:
+Important Stage 1 components include:
 
 - HumanML3D catalog and split loading;
 - transition-aware long-sequence synthesis;
-- HumanML3D-to-MoConVQ motion conversion;
-- MoConVQ latent and RVQ-index cache construction;
+- HumanML3D long-motion export to BVH;
+- MoConVQ-native BVH-to-character retargeting;
+- RVQ index / latent cache construction with segment-aligned metadata;
 - T5 text-feature extraction;
-- GPT fine-tuning;
+- conservative fine-tuning of MoConVQ `Text2Motion_Transformer`;
 - BVH generation and MP4 rendering scripts;
-- diagnostic tests and experiment documentation.
+- engineering metrics, contact sheets, and approximate T2M evaluator metrics.
 
-See the `stage1/` directory for the Stage 1 implementation snapshot included in `main`, and the `stage1` branch for the actively developed Stage 1 history and running instructions.
+The main Stage 1 finding is that naive hand-written
+HumanML3D-to-MoConVQ state conversion produced unhealthy token distributions.
+The current route instead exports HumanML3D motion to BVH and uses MoConVQ's
+native character-retargeting path before building the GPT cache.  This gives a
+working and reproducible pipeline, with partial but not complete improvement
+over the original baseline on long multi-stage prompts.
 
-## Stage 2: Physics-Consistent Deployment
-
-Stage 2 will focus on deploying generated motions in a physics simulator. The planned direction is to train a reinforcement learning controller that can track generated reference motions while satisfying physical constraints such as balance, stable foot contact, and torque limits.
-
-The planned Stage 2 components include:
-
-- humanoid tracking of generated BVH/reference motions;
-- masked error correction for dynamically infeasible motion parts;
-- PPO-based policy training in simulation;
-- privileged distillation for robust deployment;
-- qualitative video demonstration of multi-step instruction execution.
-
-## Repository Branches
-
-This repository is organized by project stage:
+Useful Stage 1 entry points:
 
 ```text
-main    Project overview plus stage-specific implementation folders
-stage1  Stage 1 implementation history: HumanML3D synthesis and MoConVQ-GPT fine-tuning
+stage1/README.md
+stage1/STAGE1_README.md
+stage1/STAGE1_FINAL_RESULT_SUMMARY.md
+stage1/STAGE1_METHOD_RESULTS_FOR_PRESENTATION.md
+stage1/TEXT_GPT_TRAINING.md
 ```
 
-A future `stage2` branch may be added for the physics-consistent deployment stage before the final integration into `main`.
+## Stage 2: Physics-Consistent Whole-Body Control
+
+Stage 2 focuses on tracking generated reference motions with a physically
+simulated humanoid.  Its code is developed in `origin/stage_2_xiyuan_dev` and is
+intended to be synchronized into `main` under `stage2/`.
+
+Stage 2 is built around a neural whole-body-control stack for the Unitree H1
+humanoid.  It includes reusable core data structures, Isaac Lab and MuJoCo
+simulation wrappers, policy training code, evaluation tools, and deployment
+interfaces.
+
+The Stage 2 pipeline is:
+
+```text
+Reference motion / BVH-derived motion
+  -> motion dataset and reference-motion manager
+  -> Isaac Lab teacher-policy training
+  -> student policy distillation
+  -> MuJoCo sim-to-sim validation
+  -> inference environment
+  -> optional Unitree H1 deployment wrapper
+```
+
+Important Stage 2 components include:
+
+- `neural_wbc/core`: body-state data structures, reference-motion management,
+  observation utilities, termination logic, environment wrapper, and evaluator;
+- `neural_wbc/isaac_lab_wrapper`: Isaac Lab environment, observations, rewards,
+  terrain, events, visualization, and control utilities;
+- `neural_wbc/student_policy`: student policy, storage, teacher-policy wrapper,
+  and training utilities;
+- `neural_wbc/mujoco_wrapper`: MuJoCo robot/simulator wrappers for sim-to-sim
+  validation and visualization;
+- `neural_wbc/inference_env`: high-level inference, evaluation, and deployment
+  player scripts;
+- `neural_wbc/hw_wrappers`: Unitree H1 hardware wrapper for real-robot
+  deployment experiments;
+- `run_scripts/`: install, retargeting, unit-test, end-to-end-test, training,
+  evaluation, visualization, ONNX export, and MP4 recording scripts;
+- `third_party/`: bundled or patched dependencies including Human2Humanoid,
+  RSL-RL, and a modified MuJoCo viewer.
+
+Stage 2 uses reinforcement learning and policy distillation to make generated
+or dataset reference motions trackable under physical constraints.  Its metrics
+include tracking success rate, global/local/procrustes-aligned MPJPE, velocity
+and acceleration errors, root-orientation errors, root-velocity error, and
+root-height error.
+
+## Development Branches
+
+The active branches relevant to this repository are:
+
+```text
+main                    Integration branch and project-level documentation.
+stage1                  Stage 1 development history and experiments.
+origin/stage_2_xiyuan_dev  Stage 2 development branch to be merged into main.
+```
+
+When the Stage 2 branch is synchronized into `main`, the root README should
+continue to describe both `stage1/` and `stage2/`, while detailed installation
+and running instructions should remain in each stage's own README files.
 
 ## Current Status
 
-Stage 1 has an end-to-end experimental pipeline: data synthesis, MoConVQ cache construction, GPT fine-tuning, BVH generation, and rendering. The current results show that the engineering pipeline is functional, but qualitative long-horizon generation still needs improvement. In particular, future work should improve synthesized data quality, motion-window/text alignment, long-horizon generation strategy, and evaluation metrics beyond token-level loss.
+Stage 1 has an end-to-end experimental pipeline for long-horizon text-to-motion:
+HumanML3D sequence construction, MoConVQ-native retargeting, RVQ cache
+construction, GPT fine-tuning, BVH generation, rendering, and approximate
+evaluation.  The result is a working pipeline with partial improvement on long
+multi-stage prompts, but not a solved text-to-motion system.
 
-Stage 2 is planned as the next major development stage.
+Stage 2 has a neural WBC codebase on `origin/stage_2_xiyuan_dev` for reference
+motion tracking, teacher/student policy workflows, MuJoCo validation, and H1
+deployment interfaces.  It will become the physics-consistent execution layer
+for motions produced or selected by Stage 1 once synchronized into `main`.
 
 ## References
 
-This project is based on:
+This project builds on:
 
-- MoConVQ: Unified Physics-Based Motion Control via Scalable Discrete Representations
+- MoConVQ: Unified Physics-Based Motion Control via Scalable Discrete
+  Representations
 - HumanML3D: 3D Human Motion-Language Dataset
-
-The project proposal follows a two-stage design: long-horizon kinematic motion synthesis first, followed by physics-consistent deployment in simulation.
+- Neural whole-body control workflows for humanoid motion tracking
+- Unitree H1 simulation and deployment tooling
