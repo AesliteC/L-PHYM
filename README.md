@@ -175,12 +175,14 @@ stage1/STAGE1_FINAL_RESULT_SUMMARY.md
 
 ## Stage 2: Run Neural WBC Tracking
 
-Stage 2 is expected under `stage2/` after synchronization from the Stage 2
-development branch.  Commands in this section run from the `stage2/` directory:
+Stage 2 lives under `stage2/`.  It evaluates whether retargeted or generated
+reference motions can be tracked by a physically simulated Unitree H1 humanoid
+using the HOVER / neural WBC teacher policy.  Commands in this section run from
+the `stage2/` directory:
 
 ```bash
 cd stage2
-export ISAACLAB_PATH=/path/to/IsaacLab
+export ISAACLAB_PATH=/path/to/IsaacLab4HOVER
 ```
 
 Stage 2 uses Isaac Lab.  The install script checks for Isaac Lab `v2.0.0` when
@@ -197,7 +199,21 @@ required third-party patches.
 
 ### 2. Prepare H1 Retargeted Motion Data
 
-Place AMASS and SMPL resources in the paths expected by
+Training, evaluation, and video recording expect an H1 reference motion file in
+`.pkl` format.  You can either pass an explicit path:
+
+```bash
+export REFERENCE_MOTION_PATH=/path/to/h1_motion_set.pkl
+```
+
+or place the file under `neural_wbc/data/data/motions/` and refer to it by name:
+
+```bash
+cp /path/to/h1_motion_set.pkl neural_wbc/data/data/motions/my_motion.pkl
+export MOTION=my_motion
+```
+
+For AMASS-style data, place AMASS and SMPL resources in the paths expected by
 `run_scripts/retarget_h1.sh`, then run:
 
 ```bash
@@ -218,6 +234,8 @@ The expected output is:
 third_party/human2humanoid/data/h1/amass_all.pkl
 ```
 
+Use this `.pkl` path as `REFERENCE_MOTION_PATH` in the commands below.
+
 ### 3. Run Unit and End-to-End Tests
 
 ```bash
@@ -227,52 +245,110 @@ bash run_scripts/run_e2e_tests.sh
 
 ### 4. Train Teacher Policy
 
-```bash
-bash run_scripts/training/01_train_teacher.sh
-```
-
-The script runs `scripts/rsl_rl/train_teacher_policy.py` with Isaac Lab.  Edit
-the script or pass equivalent options if you need a different number of
-environments, robot, or reference motion path.
-
-### 5. Evaluate Teacher Policy
+For reproduction, prefer the explicit Isaac Lab command so the motion path and
+training length are visible:
 
 ```bash
-bash run_scripts/training/02_eval_teacher.sh
+export REFERENCE_MOTION_PATH=/path/to/h1_motion_set.pkl
+
+${ISAACLAB_PATH}/isaaclab.sh -p scripts/rsl_rl/train_teacher_policy.py \
+  --num_envs 1024 \
+  --reference_motion_path "${REFERENCE_MOTION_PATH}" \
+  --robot h1 \
+  --teacher_policy.max_iterations 150000 \
+  --headless
 ```
 
-### 6. Train Student Policy
-
-```bash
-bash run_scripts/training/03_train_student.sh
-```
-
-Common configuration is loaded through `run_scripts/common.sh`, including the
-teacher run/checkpoint, robot, number of environments, and reference motion
-path.
-
-### 7. Resume or Evaluate Student Policy
-
-```bash
-bash run_scripts/training/04_resume_student.sh
-bash run_scripts/training/05_eval_student.sh
-```
+Checkpoints are saved under `logs/teacher/<run_id>/` as
+`model_<iteration>.pt`.  Reduce `--num_envs` for debugging if GPU memory is
+limited.
 
 To resume teacher training:
 
 ```bash
-bash run_scripts/training/06_resume_teacher.sh
+${ISAACLAB_PATH}/isaaclab.sh -p scripts/rsl_rl/train_teacher_policy.py \
+  --num_envs 1024 \
+  --reference_motion_path "${REFERENCE_MOTION_PATH}" \
+  --robot h1 \
+  --teacher_policy.resume \
+  --teacher_policy.resume_path logs/teacher/<run_id> \
+  --teacher_policy.checkpoint model_<iteration>.pt \
+  --headless
 ```
 
-### 8. Visualize and Export
+### 5. Evaluate Teacher Policy
+
+Evaluate the teacher checkpoint on a motion set:
 
 ```bash
+mkdir -p outputs
+
+${ISAACLAB_PATH}/isaaclab.sh -p scripts/rsl_rl/eval.py \
+  --num_envs 10 \
+  --reference_motion_path "${REFERENCE_MOTION_PATH}" \
+  --robot h1 \
+  --teacher_policy.resume_path logs/teacher/<run_id> \
+  --teacher_policy.checkpoint model_<iteration>.pt \
+  --metrics_path outputs/teacher_eval.json \
+  --headless
+```
+
+The helper script uses the same arguments through environment variables:
+
+```bash
+REFERENCE_MOTION_PATH=/path/to/h1_motion_set.pkl \
+TEACHER_RUN=logs/teacher/<run_id> \
+TEACHER_CHECKPOINT=model_<iteration>.pt \
+NUM_ENVS_EVAL=10 \
+bash run_scripts/training/02_eval_teacher.sh \
+  --metrics_path outputs/teacher_eval.json
+```
+
+The main Stage 2 diagnostic is teacher-level tracking success / completion
+across motion sets.  MPJPE metrics are also reported for successful rollouts.
+
+### 6. Record Teacher Demos
+
+```bash
+REFERENCE_MOTION_PATH=/path/to/h1_motion_set.pkl \
+TEACHER_RUN=logs/teacher/<run_id> \
+TEACHER_CHECKPOINT=model_<iteration>.pt \
+VIDEO_FOLDER=videos/teacher_demo_1080p \
+VIDEO_WIDTH=1920 \
+VIDEO_HEIGHT=1080 \
+VIDEO_FPS=50 \
+MOTION_START_IDX=0 \
+MOTION_COUNT=8 \
+bash run_scripts/visualization/06_record_teacher_mp4.sh
+```
+
+Useful recording options:
+
+```bash
+STOP_ON_DONE=1            # stop when the reference ends or tracking fails
+FOLLOW_ROBOT_CAMERA=1     # keep the robot centered
+HIDE_REF_MARKERS=1        # cleaner qualitative demos
+RECORDING_SCENE=1
+```
+
+Very short MP4 files usually indicate early termination, such as undesired
+contact or excessive reference-motion distance.  Exclude those clips from
+qualitative demos.
+
+### 7. Optional Student and Visualization Scripts
+
+Student distillation is not required for the teacher-level reproduction path,
+but the scripts are kept for deployment-oriented experiments:
+
+```bash
+bash run_scripts/training/03_train_student.sh
+bash run_scripts/training/04_resume_student.sh
+bash run_scripts/training/05_eval_student.sh
 bash run_scripts/visualization/01_play_teacher_livestream.sh
 bash run_scripts/visualization/02_play_teacher_headless.sh
 bash run_scripts/visualization/03_play_student_livestream.sh
 bash run_scripts/visualization/04_play_teacher_gui.sh
 bash run_scripts/visualization/05_export_teacher_onnx.sh
-bash run_scripts/visualization/06_record_teacher_mp4.sh
 ```
 
 For a simple MuJoCo viewer:
@@ -284,7 +360,7 @@ ${ISAACLAB_PATH}/isaaclab.sh -p neural_wbc/inference_env/scripts/mujoco_viewer_p
 The viewer starts paused.  Press `SPACE` to start simulation or `RIGHT` to step
 one frame.
 
-### 9. Stage 2 Package Docs
+### 8. Stage 2 Package Docs
 
 ```text
 stage2/neural_wbc/core/README.md
